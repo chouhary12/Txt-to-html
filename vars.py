@@ -5,18 +5,18 @@ load_dotenv()
 
 from os import environ
 
-API_ID    = int(environ.get("API_ID", "0"))
-API_HASH  = environ.get("API_HASH", "")
+API_ID    = int(environ.get("API_ID", "22480303"))
+API_HASH  = environ.get("API_HASH", "99c931b6c1ae6f8c3c3e87da173fa424")
 BOT_TOKEN = environ.get("BOT_TOKEN", "")
-CREDIT    = environ.get("CREDIT", "𝕂𝕦𝕟𝕕𝕒𝕟 𝕐𝕒𝕕𝕒𝕧😎")
+CREDIT    = environ.get("CREDIT", "जाटⁱˢß𝐚𝐜𝐤ツ")
 MONGO_URI = environ.get("MONGO_URI", "")
 
-# Public channel username WITHOUT @ (e.g. "BabuBhaiKundan")
-FORCE_SUB_CHANNEL = environ.get("FORCE_SUB_CHANNEL", "BabuBhaiKundan")
+# Public channel username WITHOUT @ (e.g. "inventor_king_24")
+FORCE_SUB_CHANNEL = environ.get("FORCE_SUB_CHANNEL", "inventor_king_24")
 
-# Log channel — channel ID (e.g. "-1001234567890") ya username (e.g. "MyLogChannel")
+# Log channel — channel ID (e.g. "-1003741302851") ya username (e.g. "MyLogChannel")
 # Bot ko us channel ka admin hona chahiye
-_log_raw = environ.get("LOG_CHANNEL", "-1004489412273").strip()
+_log_raw = environ.get("LOG_CHANNEL", "-1003741302851").strip()
 if _log_raw.lstrip("-").isdigit():
     LOG_CHANNEL = int(_log_raw)
 else:
@@ -25,7 +25,7 @@ else:
 
 
 # Space-separated admin Telegram user IDs  e.g. "123456789 987654321"
-ADMINS = [int(x) for x in environ.get("ADMINS", "5096393058").split() if x.strip().isdigit()]
+ADMINS = [int(x) for x in environ.get("ADMINS", "8295147093").split() if x.strip().isdigit()]
 
 
 # ========================================
