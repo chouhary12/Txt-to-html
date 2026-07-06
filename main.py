@@ -108,7 +108,7 @@ def _read_file(path: str) -> str:
 # ═══════════════════════════════════════════════════════════════════════════
 
 WELCOME_PHOTOS = [
-    "https://babubhaikundan.pages.dev/Assets/logo/hacker.png", "https://babubhaikundan.pages.dev/Assets/logo/bbk.png",
+    "https://image-link.edgeone.app/1783342979956-g61289.jpg",
 ]
 
 import random
