@@ -131,7 +131,7 @@ async def check_force_sub(client: Client, message: Message) -> bool:
                 "Join karke **Retry** button dabao."
             ),
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📢 Channel Join Karo", url=f"https://t.me/{FORCE_SUB_CHANNEL}")],
+                [InlineKeyboardButton("📢 Channel Join Karo", url=f"https://t.me/inventor_king_24")],
                 [InlineKeyboardButton("✅ Retry", callback_data="checksub")],
             ]),
             quote=True,
@@ -166,7 +166,7 @@ async def start_command(client: Client, message: Message):
             "Use /help for more details."
         ),
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 Updates Channel", url=f"https://t.me/{FORCE_SUB_CHANNEL}")],
+            [InlineKeyboardButton("📢 Updates Channel", url=f"https://t.me/inventor_king_24")],
             [InlineKeyboardButton("❓ Help", callback_data="show_help")],
         ]),
     )
@@ -303,8 +303,8 @@ async def broadcast_command(client: Client, message: Message):
 
 # ── kundan alias ───────────────────────────────────────────────────────────
 
-@bot.on_message(filters.command("kundan") & filters.private)
-async def kundan_command(client: Client, message: Message):
+@bot.on_message(filters.command("jaat") & filters.private)
+async def jaat_command(client: Client, message: Message):
     if not await check_force_sub(client, message):
         return
     await message.reply_text(
@@ -455,7 +455,7 @@ async def recheck_sub_callback(client: Client, callback_query: CallbackQuery):
             "Use /help for full guide."
         ),
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📢 Updates Channel", url=f"https://t.me/{FORCE_SUB_CHANNEL}")],
+            [InlineKeyboardButton("📢 Updates Channel", url=f"https://t.me/inventor_king_24")],
         ]),
     )
 
@@ -481,15 +481,15 @@ if __name__ == "__main__":
 
     print(r"""
 ╔══════════════════════════════════════════════════════════════╗
-║                     🚀 BBK FILE BOT 🚀                      ║
+║                     🚀 jaat FILE BOT 🚀                      ║
 ╠══════════════════════════════════════════════════════════════╣
-║                  👨‍💻 Developer: Babu Bhai Kundan             ║
+║                  👨‍💻 Developer: जाटⁱˢß𝐚𝐜𝐤ツ             ║
 ║                                                              ║
 ║  🤖 Telegram File To Link Bot                               ║
 ║  ⚡ Fast • Secure • Reliable                                ║
 ║                                                              ║
-║  📢 Join on Telegram:      @BabuBhaiKundan                  ║
-║  💬 Contact on Telegram:   @Kundan_Yadav_Bot               ║
+║  📢 Join on Telegram:      @inventor_king_24                  ║
+║  💬 Contact on Telegram:   @jaatcontact_bot               ║
 ╠══════════════════════════════════════════════════════════════╣
 ║                  🤖 Bot starting...                         ║
 ╚══════════════════════════════════════════════════════════════╝
