@@ -24,7 +24,7 @@ else:
  
 
 
-# Space-separated admin Telegram user IDs  e.g. "123456789 987654321"
+# Space-separated admin Telegram user IDs  e.g. "8295147093 987654321"
 ADMINS = [int(x) for x in environ.get("ADMINS", "8295147093").split() if x.strip().isdigit()]
 
 
