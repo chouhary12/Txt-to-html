@@ -5,7 +5,7 @@ Fixes in v3.1:
 • Plyr settings menu (speed/quality card) no longer clips inside player —
   forced bottom-anchor with correct z-index and overflow guard
 • Mute button and volume slider removed from player controls
-• Footer now shows Telegram link @BabuBhaiKundan with text "Babu Bhai Kundan"
+• Footer now shows Telegram link @jaat_mk with text "जाटⁱˢß𝐚𝐜𝐤ツ"
 """
 
 import re, html, json, hashlib, textwrap
@@ -879,31 +879,31 @@ _DRAWER_HTML = """
     <div class="kk-drawer-logo"><i class="fa-solid fa-cube" aria-hidden="true"></i> Menu</div>
   </div>
   <ul role="menu">
-    <li role="menuitem"><a href="https://babubhaikundan.pages.dev" target="_blank" rel="noopener">
+    <li role="menuitem"><a href="https://t.me/inventor_king_24" target="_blank" rel="noopener">
         <i class="fa-solid fa-globe" aria-hidden="true"></i> Official Website</a></li>
-    <li role="menuitem"><a href="https://babubhaikundan.pages.dev/App-Store/">
+    <li role="menuitem"><a href="https://t.me/inventor_king_24">
         <i class="fa-solid fa-rocket" aria-hidden="true"></i> App Store</a></li>
-    <li role="menuitem"><a href="https://babubhaikundan.pages.dev/Tools/">
+    <li role="menuitem"><a href="https://t.me/inventor_king_24">
         <i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i> Tools</a></li>
-    <li role="menuitem"><a href="https://babubhaikundan.pages.dev/Resume/" target="_blank" rel="noopener">
+    <li role="menuitem"><a href="https://t.me/inventor_king_24" target="_blank" rel="noopener">
         <i class="fa-solid fa-file-invoice" aria-hidden="true"></i> Resume Maker</a></li>
-    <li role="menuitem"><a href="https://babubhaikundan.pages.dev/Test-Series/">
+    <li role="menuitem"><a href="https://t.me/inventor_king_24">
         <i class="fa-solid fa-layer-group" aria-hidden="true"></i> Test Series</a></li>
-    <li role="menuitem"><a href="https://babubhaikundan.pages.dev/Ai/">
+    <li role="menuitem"><a href="https://t.me/inventor_king_24">
         <i class="fa-solid fa-robot" aria-hidden="true"></i> Ai ChatBot</a></li>
-    <li role="menuitem"><a href="https://babubhaikundan.pages.dev/About/">
+    <li role="menuitem"><a href="https://t.me/inventor_king_24">
         <i class="fa-solid fa-user-astronaut" aria-hidden="true"></i> About Me</a></li>
   </ul>
   <div class="kk-drawer-social">
     <div class="kk-drawer-social-title">Connect With Me</div>
     <div class="kk-drawer-social-links">
-      <a href="https://instagram.com/babubhaikundan" target="_blank" rel="noopener" aria-label="Instagram">
+      <a href="https://t.me/inventor_king_24" target="_blank" rel="noopener" aria-label="Instagram">
         <i class="fa-brands fa-instagram" aria-hidden="true"></i></a>
-      <a href="https://github.com/babubhaikundan" target="_blank" rel="noopener" aria-label="GitHub">
+      <a href="https://github.com/" target="_blank" rel="noopener" aria-label="GitHub">
         <i class="fa-brands fa-github" aria-hidden="true"></i></a>
-      <a href="https://twitter.com/babubhaikundan" target="_blank" rel="noopener" aria-label="Twitter / X">
+      <a href="https://twitter.com/" target="_blank" rel="noopener" aria-label="Twitter / X">
         <i class="fa-brands fa-x-twitter" aria-hidden="true"></i></a>
-      <a href="https://t.me/babubhaikundan" target="_blank" rel="noopener" aria-label="Telegram">
+      <a href="https://t.me/inventor_king_24" target="_blank" rel="noopener" aria-label="Telegram">
         <i class="fa-brands fa-telegram" aria-hidden="true"></i></a>
     </div>
   </div>
@@ -1994,12 +1994,12 @@ def generate_html(file_name: str, structured_list: list) -> str:
         f'  <div id="content-container" role="list" aria-label="Course content">{content_html}</div>',
         '</main>',
 
-        # ── Footer — Telegram link, text "Babu Bhai Kundan" ──
+        # ── Footer — Telegram link, text "जाटⁱˢß𝐚𝐜𝐤ツ" ──
         '<footer class="footer-wrap">',
-        '  <a class="footer-credit-btn" href="https://t.me/BabuBhaiKundan"',
-        '     target="_blank" rel="noopener noreferrer" aria-label="Telegram: Babu Bhai Kundan">',
+        '  <a class="footer-credit-btn" href="https://t.me/jaat_mk"',
+        '     target="_blank" rel="noopener noreferrer" aria-label="Telegram: जाटⁱˢß𝐚𝐜𝐤ツ">',
         '    <i class="fa-brands fa-telegram" aria-hidden="true" style="color:#29b5e8;font-size:18px"></i>',
-        '    <span style="color:#ffffff;font-weight:800;font-size:14px">Babu Bhai Kundan</span>',
+        '    <span style="color:#ffffff;font-weight:800;font-size:14px">जाटⁱˢß𝐚𝐜𝐤ツ</span>',
         '  </a>',
         '  <p class="shortcut-hint">',
         '    <kbd>Space</kbd>=play/pause &nbsp;|&nbsp;',
