@@ -157,7 +157,7 @@ async def start_command(client: Client, message: Message):
         message.from_user.full_name,
     )
     await message.reply_photo(
-        photo="https://babubhaikundan.pages.dev/Assets/logo/bbk.png",
+        photo="https://image-link.edgeone.app/1783342979956-g61289.jpg",
         caption=(
             f"👋 **Hello {message.from_user.mention}!**\n\n"
             "Welcome to **TXT → HTML Converter Bot** 🪄\n\n"
