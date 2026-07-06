@@ -5,7 +5,7 @@ Fixes in v3.1:
 • Plyr settings menu (speed/quality card) no longer clips inside player —
   forced bottom-anchor with correct z-index and overflow guard
 • Mute button and volume slider removed from player controls
-• Footer now shows Telegram link @BabuBhaiKundan with text "Babu Bhai Kundan"
+• Footer now shows Telegram link @jaat_mk with text "जाटⁱˢß𝐚𝐜𝐤ツ"
 """
 
 import re, html, json, hashlib, textwrap
