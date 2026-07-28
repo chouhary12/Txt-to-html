@@ -733,14 +733,64 @@ html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#ff
   box-shadow:0 8px 32px rgba(0,0,0,.28);
 }
 #yt-frame{width:100%;height:100%;border:none;display:block;}
-.yt-open-link{
-  position:absolute;bottom:10px;right:10px;z-index:5;
-  background:rgba(0,0,0,.75);color:#fff;
-  padding:6px 13px;border-radius:20px;font-size:12px;font-weight:600;
-  text-decoration:none;display:flex;align-items:center;gap:5px;
-  transition:background .2s;backdrop-filter:blur(4px);
+/* YouTube direct link – always visible below iframe */
+.yt-embed-wrapper {
+  position: relative; /* so we can place link below */
 }
-.yt-open-link:hover{background:rgba(204,0,0,.9);}
+#yt-open-link {
+  position: static;  /* ab absolute nahi, normal flow me aayega */
+  display: block;
+  margin: 10px auto 0;
+  width: fit-content;
+  background: #cc0000;
+  color: #fff;
+  padding: 12px 30px;
+  border-radius: 30px;
+  font-size: 16px;
+  font-weight: 800;
+  text-decoration: none;
+  text-align: center;
+  transition: background .2s, transform .2s;
+  box-shadow: 0 4px 15px rgba(204,0,0,.4);
+}
+#yt-open-link:hover {
+  background: #a00000;
+  transform: translateY(-2px);
+}
+
+/* ── YT Embed Fallback (error 153 etc.) ── */
+.yt-embed-wrapper.yt-fallback::before {
+  content: "⚠️ Video embed restricted. Watch directly on YouTube:";
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.85);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 700;
+  padding: 20px;
+  text-align: center;
+  z-index: 10;
+  border-radius: var(--radius);
+  flex-direction: column;
+  gap: 15px;
+  pointer-events: none; /* taaki link click ho sake */
+}
+.yt-embed-wrapper.yt-fallback .yt-open-link {
+  z-index: 11;
+  background: #cc0000;
+  padding: 12px 25px;
+  font-size: 16px;
+  border-radius: 30px;
+  font-weight: 800;
+  bottom: auto;
+  top: 60%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+}
 
 /* ── Empty state ── */
 .empty-msg{text-align:center;padding:48px;color:var(--muted);font-size:15px;}
@@ -1481,11 +1531,11 @@ function _showYTPlayer(ytId) {
   var frame = document.getElementById('yt-frame');
   var link  = document.getElementById('yt-open-link');
   if (pw)    pw.style.display = 'none';
-  /* youtube-nocookie.com = fewer restrictions, no enablejsapi = no origin check */
   if (frame) frame.src = 'https://www.youtube-nocookie.com/embed/' + ytId +
     '?autoplay=1&rel=0&fs=1&color=white';
   if (link)  link.href = 'https://www.youtube.com/watch?v=' + ytId;
   if (ytW)   ytW.style.display = 'block';
+  // Timer hatao, link hamesha dikhao (CSS handle karega)
   setLoading(false);
 }
 function _showDirectPlayer() {
