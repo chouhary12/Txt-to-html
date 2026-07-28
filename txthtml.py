@@ -734,27 +734,47 @@ html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#ff
 }
 #yt-frame{width:100%;height:100%;border:none;display:block;}
 /* YouTube direct link – always visible below iframe */
+/* ── YouTube Embed Wrapper ── */
 .yt-embed-wrapper {
-  position: relative; /* so we can place link below */
+  display: none;                    /* JS se show hoga */
+  width: 100%;
+  background: #000;
+  border-radius: var(--radius);
+  overflow: hidden;
+  margin-bottom: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.28);
+  flex-direction: column;           /* iframe + button column mein */
+  align-items: center;
 }
-#yt-open-link {
-  position: static;  /* ab absolute nahi, normal flow me aayega */
+.yt-embed-wrapper.show {
+  display: flex;
+}
+
+#yt-frame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: none;
   display: block;
-  margin: 10px auto 0;
+}
+
+/* Permanent big "Open in YouTube" button */
+#yt-open-link {
+  display: block;
   width: fit-content;
-  background: #cc0000;
+  margin: 12px auto;
+  background: #ff0000;
   color: #fff;
-  padding: 12px 30px;
-  border-radius: 30px;
   font-size: 16px;
   font-weight: 800;
+  padding: 12px 30px;
+  border-radius: 30px;
   text-decoration: none;
   text-align: center;
-  transition: background .2s, transform .2s;
-  box-shadow: 0 4px 15px rgba(204,0,0,.4);
+  box-shadow: 0 4px 15px rgba(255,0,0,.4);
+  transition: background 0.2s, transform 0.2s;
 }
 #yt-open-link:hover {
-  background: #a00000;
+  background: #cc0000;
   transform: translateY(-2px);
 }
 
@@ -1526,16 +1546,15 @@ function _getYtId(url) {
   return m ? m[1] : null;
 }
 function _showYTPlayer(ytId) {
-  var pw    = document.getElementById('player-wrapper');
-  var ytW   = document.getElementById('yt-embed-wrapper');
+  var pw   = document.getElementById('player-wrapper');
+  var ytW  = document.getElementById('yt-embed-wrapper');
   var frame = document.getElementById('yt-frame');
-  var link  = document.getElementById('yt-open-link');
-  if (pw)    pw.style.display = 'none';
+  var link = document.getElementById('yt-open-link');
+  if (pw)   pw.style.display = 'none';
   if (frame) frame.src = 'https://www.youtube-nocookie.com/embed/' + ytId +
     '?autoplay=1&rel=0&fs=1&color=white';
-  if (link)  link.href = 'https://www.youtube.com/watch?v=' + ytId;
-  if (ytW)   ytW.style.display = 'block';
-  // Timer hatao, link hamesha dikhao (CSS handle karega)
+  if (link) link.href = 'https://www.youtube.com/watch?v=' + ytId;
+  if (ytW)  ytW.classList.add('show');   // <-- class "show" se display:flex ho jayega
   setLoading(false);
 }
 function _showDirectPlayer() {
