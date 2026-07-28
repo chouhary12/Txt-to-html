@@ -24,6 +24,19 @@ def _get_youtube_id(url: str):
     m = _YT_RE.search(url)
     return m.group(1) if m else None
 
+def _is_youtube_url(url: str) -> bool:
+    """Check if URL contains YouTube domain (but maybe not embeddable ID)."""
+    return 'youtube.com/' in url or 'youtu.be/' in url
+
+def _transform_url(url: str) -> str:
+    """Rewrite specific domain to CDN."""
+    if url.startswith('https://apps-s3-jw-prod.utkarshapp.com'):
+        return url.replace(
+            'https://apps-s3-jw-prod.utkarshapp.com',
+            'https://d1q5ugnejk3zoi.cloudfront.net/ut-production-jw',
+            1
+        )
+    return url
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  DATA EXTRACTION
@@ -45,7 +58,7 @@ def extract_names_and_urls(file_content: str) -> list:
             name, _, url = line.partition(":")
             name, url = name.strip(), url.strip()
             if name and url:
-                pairs.append((name, url))
+                pairs.append((name, _transform_url(url)))
     return pairs
 
 
@@ -90,7 +103,7 @@ def structure_data_in_order(urls: list) -> list:
             for ch in json_data.get("data", {}).get("chapters", []):
                 subj   = ch.get("subject_id", "General")
                 ctitle = ch.get("title", "")
-                clink  = ch.get("link", "")
+                clink  = _transform_url(ch.get("link", ""))
                 ctopic = extract_topic(ctitle)
                 lid    = _make_lid(subj, ctopic, ctitle)
                 if subj not in subject_map:
@@ -186,20 +199,25 @@ def _lecture_html(lec: dict, global_index: int) -> str:
     for i, vurl in enumerate(videos, 1):
         yt_id    = _get_youtube_id(vurl)
         is_yt    = yt_id is not None
+        is_probably_yt = not is_yt and _is_youtube_url(vurl)
+
         if multi:
             label = f"Part {i} &#9654;"
-        elif is_yt:
+        elif is_yt or is_probably_yt:
             label = "&#9654;&nbsp;YouTube"
         else:
             label = "&#9654;&nbsp;Play"
-        extra_cls = " yt-item" if is_yt else ""
+
+        extra_cls = " yt-item" if (is_yt or is_probably_yt) else ""
         if is_yt:
             data_part = f'data-yt="{html.escape(yt_id, quote=True)}"'
             aria_lbl  = f"Watch on YouTube: {eta}"
+        elif is_probably_yt:
+            data_part = f'data-url="{html.escape(vurl, quote=True)}"'
+            aria_lbl  = f"Open YouTube link: {eta}"
         else:
             data_part = f'data-url="{html.escape(vurl, quote=True)}"'
-            aria_lbl  = f"Play {eta}{(' part ' + str(i)) if multi else ''}"
-        video_links += (
+            aria_lbl  = f"Play {eta}{(' part ' + str(i)) if multi else ''}"        video_links += (
             f'<a href="#" class="list-item video-item{extra_cls}" role="button" tabindex="0"'
             f' {data_part} data-lid="{lid}" data-title="{eta}"'
             f' data-gidx="{global_index}"'
@@ -1442,7 +1460,15 @@ function playVideo(event, element) {
   var gidx  = parseInt(element.dataset.gidx, 10);
   if (!ytId && !url) return;
 
+  // NEW: If it's a YouTube link but not embeddable, open in new tab
+  if (!ytId && element.classList.contains('yt-item')) {
+    window.open(url, '_blank');
+    showToast('YouTube link opened in new tab', 'info');
+    return;
+  }
+
   _destroyPlayer();
+  ...  // rest of the function unchanged
   hideError();
   lastErrorUrl = url;
 
@@ -1550,8 +1576,8 @@ function _attachEvents(startTime) {
 
   player.on('error', function (event) {
     setLoading(false);
-    showError('Video failed to load. Check your connection or try again.');
-    showToast('Video load failed', 'error');
+    showError('Video nahi chal saki. Direct link se dekh lo ya link sahi hai check karo.');
+    showToast('Playback error', 'error');
   });
 }
 
@@ -1622,19 +1648,11 @@ function loadNewVideo(url, startTime) {
     hlsInstance.on(Hls.Events.ERROR, function (event, data) {
       if (data.fatal) {
         setLoading(false);
-        switch (data.type) {
-          case Hls.ErrorTypes.NETWORK_ERROR:
-            showToast('Network error — retrying…', 'warn');
-            hlsInstance.startLoad();
-            break;
-          case Hls.ErrorTypes.MEDIA_ERROR:
-            showToast('Media error — recovering…', 'warn');
-            hlsInstance.recoverMediaError();
-            break;
-          default:
-            showError('HLS stream failed to load.');
-            showToast('Stream error', 'error');
-        }
+        // HLS ko destroy karo, error dikhao, direct link de do
+        try { hlsInstance.destroy(); } catch (e) {}
+        hlsInstance = null;
+        showError('Video load nahi ho saki. Direct link se khol kar dekh lo.');
+        showToast('Stream error', 'error');
       }
     });
 
