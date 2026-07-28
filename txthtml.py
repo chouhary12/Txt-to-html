@@ -12,7 +12,8 @@ import re, html, json, hashlib, textwrap
 
 # ── YouTube URL detector ───────────────────────────────────────────────────
 _YT_RE = re.compile(
-    r'(?:https?://)?(?:www\.)?'
+    r'(?:https?:)?//?'
+    r'(?:www\.)?'
     r'(?:youtube\.com/(?:watch\?(?:.*&)?v=|embed/|live/|shorts/)'
     r'|youtu\.be/)'
     r'([a-zA-Z0-9_-]{11})',
@@ -79,8 +80,17 @@ def extract_names_and_urls(file_content: str) -> list:
         if ":" in line:
             name, _, url = line.partition(":")
             name, url = name.strip(), url.strip()
+            # Agar name koi URL hai (http se shuru ya //), to poori line ko URL maano
+            if name.startswith("http") or name.startswith("//"):
+                name = "Video"
+                url = line.strip()
             if name and url and _is_valid_media_url(url):
                 pairs.append((name, _transform_url(url)))
+        else:
+            # No colon, treat entire line as URL
+            url = line.strip()
+            if url and _is_valid_media_url(url):
+                pairs.append(("Video", _transform_url(url)))
     return pairs
 
 
@@ -1462,7 +1472,7 @@ function retryVideo() {
 ═══════════════════════════════════ */
 function _getYtId(url) {
   if (!url) return null;
-  var m = url.match(/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|live\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+  var m = url.match(/(?:https?:)?\/\/?(?:www\.)?(?:youtube\.com\/(?:watch\?(?:.*&)?v=|embed\/|live\/|shorts\/)|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
   return m ? m[1] : null;
 }
 function _showYTPlayer(ytId) {
