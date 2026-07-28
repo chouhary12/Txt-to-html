@@ -217,7 +217,9 @@ def _lecture_html(lec: dict, global_index: int) -> str:
             aria_lbl  = f"Open YouTube link: {eta}"
         else:
             data_part = f'data-url="{html.escape(vurl, quote=True)}"'
-            aria_lbl  = f"Play {eta}{(' part ' + str(i)) if multi else ''}"        video_links += (
+            aria_lbl  = f"Play {eta}{(' part ' + str(i)) if multi else ''}"
+
+        video_links += (
             f'<a href="#" class="list-item video-item{extra_cls}" role="button" tabindex="0"'
             f' {data_part} data-lid="{lid}" data-title="{eta}"'
             f' data-gidx="{global_index}"'
