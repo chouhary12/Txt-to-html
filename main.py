@@ -49,7 +49,7 @@ async def _send_log(
     if not LOG_CHANNEL:
         return
     try:
-        now   = datetime.datetime.utcnow().strftime("%d %b %Y %H:%M UTC")
+        now   = datetime.datetime.now(datetime.timezone.utc).strftime("%d %b %Y %H:%M UTC")
         uname = f"@{user.username}" if user.username else "—"
         fname = ((user.first_name or "") + " " + (user.last_name or "")).strip() or "Unknown"
 
