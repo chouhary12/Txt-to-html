@@ -1,14 +1,11 @@
 """
-txthtml.py — TXT → HTML Converter  (v3.1 — fixes applied)
-
-Fixes in v3.1:
-• Plyr settings menu (speed/quality card) no longer clips inside player —
-  forced bottom-anchor with correct z-index and overflow guard
-• Mute button and volume slider removed from player controls
-• Footer now shows Telegram link @BabuBhaiKundan with text "Babu Bhai Kundan"
+txthtml.py — TXT → HTML Converter  (v4.0 — master fix)
+Complete rewrite with lazy rendering, URL filtering, domain rewriting,
+improved error handling, and performance optimisations for large course lists.
+Author: Babu Bhai Kundan
 """
 
-import re, html, json, hashlib, textwrap
+import re, html, json as _json, hashlib, textwrap, os
 
 # ── YouTube URL detector ───────────────────────────────────────────────────
 _YT_RE = re.compile(
@@ -28,8 +25,21 @@ def _is_youtube_url(url: str) -> bool:
     """Check if URL contains YouTube domain (but maybe not embeddable ID)."""
     return 'youtube.com/' in url or 'youtu.be/' in url
 
+# Allowed video file extensions
+VIDEO_EXTENSIONS = {'.mp4', '.m3u8', '.mov', '.webm', '.mkv', '.flv', '.avi', '.ts', '.ogg'}
+
+def _is_valid_media_url(url: str) -> bool:
+    """True if URL is a video file, YouTube link, or PDF."""
+    if _is_youtube_url(url) or _get_youtube_id(url):
+        return True
+    if '.pdf' in url.lower():
+        return True
+    path = url.split('?')[0]                     # remove query string
+    ext = os.path.splitext(path)[1].lower()
+    return ext in VIDEO_EXTENSIONS
+
 def _transform_url(url: str) -> str:
-    """Rewrite specific domain to CDN."""
+    """Rewrite apps-s3-jw-prod domain to CDN."""
     if url.startswith('https://apps-s3-jw-prod.utkarshapp.com'):
         return url.replace(
             'https://apps-s3-jw-prod.utkarshapp.com',
@@ -46,8 +56,8 @@ def extract_names_and_urls(file_content: str) -> list:
     file_content = file_content.strip()
     if file_content.startswith("{") and file_content.endswith("}"):
         try:
-            return [("JSON_DATA", json.loads(file_content))]
-        except json.JSONDecodeError:
+            return [("JSON_DATA", _json.loads(file_content))]
+        except _json.JSONDecodeError:
             pass
     pairs = []
     for line in file_content.splitlines():
@@ -57,14 +67,12 @@ def extract_names_and_urls(file_content: str) -> list:
         if ":" in line:
             name, _, url = line.partition(":")
             name, url = name.strip(), url.strip()
-            if name and url:
+            if name and url and _is_valid_media_url(url):
                 pairs.append((name, _transform_url(url)))
     return pairs
 
-
 def extract_topic(title: str) -> str:
     return re.sub(r"\s*#\d+\s*$", "", title).strip()
-
 
 def parse_line(name: str):
     if name == "JSON_DATA":
@@ -76,7 +84,7 @@ def parse_line(name: str):
         return subj, extract_topic(rest), rest
     m = re.match(r"^(.*?\s+(?:by|By)\s+(?:Sir|Mam))\s*\|\|\s*(.+)", name)
     if m:
-        subj  = m.group(1).strip()
+        subj = m.group(1).strip()
         title = m.group(2).strip()
         return subj, extract_topic(title), title
     if "||" in name:
@@ -84,16 +92,14 @@ def parse_line(name: str):
         return subj.strip(), extract_topic(title.strip()), title.strip()
     return "General", None, name
 
-
 def _make_lid(subject: str, topic: str, title: str) -> str:
     raw = f"{subject}||{topic or ''}||{title}"
     return "l" + hashlib.md5(raw.encode()).hexdigest()[:12]
 
-
 def structure_data_in_order(urls: list) -> list:
-    structured  = []
+    structured = []
     subject_map = {}
-    last_video  = {}
+    last_video = {}
 
     for idx, (name, url) in enumerate(urls):
         subject, topic, title = parse_line(name)
@@ -101,11 +107,13 @@ def structure_data_in_order(urls: list) -> list:
         if subject == "JSON_DATA" and name == "JSON_DATA":
             json_data = url
             for ch in json_data.get("data", {}).get("chapters", []):
-                subj   = ch.get("subject_id", "General")
+                subj = ch.get("subject_id", "General")
                 ctitle = ch.get("title", "")
-                clink  = _transform_url(ch.get("link", ""))
+                clink = _transform_url(ch.get("link", ""))
+                if not _is_valid_media_url(clink):
+                    continue
                 ctopic = extract_topic(ctitle)
-                lid    = _make_lid(subj, ctopic, ctitle)
+                lid = _make_lid(subj, ctopic, ctitle)
                 if subj not in subject_map:
                     obj = {"name": subj, "topics": {}}
                     subject_map[subj] = obj
@@ -119,18 +127,18 @@ def structure_data_in_order(urls: list) -> list:
             continue
 
         is_pdf = ".pdf" in url.lower()
-        key    = (subject, topic or "", title or name)
-        lid    = _make_lid(subject, topic or "", f"{title or name}__{idx}")
+        key = (subject, topic or "", title or name)
+        lid = _make_lid(subject, topic or "", f"{title or name}__{idx}")
 
         if is_pdf and key in last_video:
             last_video[key]["pdfs"].append(url)
             continue
 
         lecture = {
-            "title":  title or name,
-            "lid":    lid,
+            "title": title or name,
+            "lid": lid,
             "videos": [] if is_pdf else [url],
-            "pdfs":   [url] if is_pdf else [],
+            "pdfs": [url] if is_pdf else [],
         }
         if not is_pdf:
             last_video[key] = lecture
@@ -149,7 +157,6 @@ def structure_data_in_order(urls: list) -> list:
             cur.setdefault("direct_lectures", []).append(lecture)
 
     return _maybe_regroup_parts(structured)
-
 
 _PART_PATTERN = re.compile(
     r'^(part|section|lecture|unit|week|day|chapter|episode|lec|vid)\s*'
@@ -172,7 +179,6 @@ def _maybe_regroup_parts(structured: list) -> list:
             new_sub["topics"][sub["name"]] = {"name": sub["name"], "lectures": all_lecs}
     return [new_sub]
 
-
 def count_total_lectures(structured: list) -> int:
     n = 0
     for sub in structured:
@@ -181,144 +187,86 @@ def count_total_lectures(structured: list) -> int:
             n += len(t.get("lectures", []))
     return n
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  LAZY RENDERING: Convert structured data to compact JSON array
+# ═══════════════════════════════════════════════════════════════════════════
+def _lectures_to_json(structured: list) -> list:
+    """Flat list of all lectures with subject index and topic name."""
+    data = []
+    for sub_idx, sub in enumerate(structured):
+        for lec in sub.get("direct_lectures", []):
+            data.append({
+                "subIdx": sub_idx,
+                "topic": None,
+                "videos": lec["videos"],
+                "pdfs": lec["pdfs"],
+                "title": lec["title"],
+                "lid": lec["lid"]
+            })
+        for tname, tdata in sub.get("topics", {}).items():
+            for lec in tdata["lectures"]:
+                data.append({
+                    "subIdx": sub_idx,
+                    "topic": tname,
+                    "videos": lec["videos"],
+                    "pdfs": lec["pdfs"],
+                    "title": lec["title"],
+                    "lid": lec["lid"]
+                })
+    return data
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  HTML CONTENT BUILDER
+#  HTML CONTENT BUILDER (only empty containers)
 # ═══════════════════════════════════════════════════════════════════════════
-
-def _lecture_html(lec: dict, global_index: int) -> str:
-    title  = lec["title"]
-    lid    = lec["lid"]
-    videos = lec["videos"]
-    pdfs   = lec["pdfs"]
-    et     = html.escape(title)
-    eta    = html.escape(title, quote=True)
-    multi  = len(videos) > 1
-
-    video_links = ""
-    for i, vurl in enumerate(videos, 1):
-        yt_id    = _get_youtube_id(vurl)
-        is_yt    = yt_id is not None
-        is_probably_yt = not is_yt and _is_youtube_url(vurl)
-
-        if multi:
-            label = f"Part {i} &#9654;"
-        elif is_yt or is_probably_yt:
-            label = "&#9654;&nbsp;YouTube"
-        else:
-            label = "&#9654;&nbsp;Play"
-
-        extra_cls = " yt-item" if (is_yt or is_probably_yt) else ""
-        if is_yt:
-            data_part = f'data-yt="{html.escape(yt_id, quote=True)}"'
-            aria_lbl  = f"Watch on YouTube: {eta}"
-        elif is_probably_yt:
-            data_part = f'data-url="{html.escape(vurl, quote=True)}"'
-            aria_lbl  = f"Open YouTube link: {eta}"
-        else:
-            data_part = f'data-url="{html.escape(vurl, quote=True)}"'
-            aria_lbl  = f"Play {eta}{(' part ' + str(i)) if multi else ''}"
-
-        video_links += (
-            f'<a href="#" class="list-item video-item{extra_cls}" role="button" tabindex="0"'
-            f' {data_part} data-lid="{lid}" data-title="{eta}"'
-            f' data-gidx="{global_index}"'
-            f' aria-label="{html.escape(aria_lbl, quote=True)}"'
-            f' onclick="playVideo(event,this)"'
-            f' onkeydown="if(event.key===\'Enter\'||event.key===\' \'){{event.preventDefault();playVideo(event,this);}}">'
-            f'{label}</a>'
-        )
-
-    pdf_links = ""
-    for purl in pdfs:
-        eu = html.escape(purl, quote=True)
-        pdf_links += (
-            f'<a href="{eu}" target="_blank" rel="noopener noreferrer"'
-            f' class="list-item pdf-item" aria-label="Open PDF for {eta}">'
-            f'<i class="fa-solid fa-file-pdf" aria-hidden="true"></i>&nbsp;PDF</a>'
-        )
-
-    watch_btn = (
-        f'<button class="watch-btn" data-lid="{lid}"'
-        f' onclick="toggleWatched(\'{lid}\')"'
-        f' aria-label="Mark as watched" aria-pressed="false"'
-        f' title="Mark watched">&#9675;</button>'
-    )
-
-    copy_btn = (
-        f'<button class="copy-btn" data-lid="{lid}"'
-        f' onclick="copyLectureLink(\'{lid}\')"'
-        f' aria-label="Copy link" title="Copy link">'
-        f'<i class="fa-solid fa-link" aria-hidden="true"></i></button>'
-    ) if videos else ""
-
-    return (
-        f'<div class="lecture-entry" data-lid="{lid}" data-gidx="{global_index}">'
-        f'<div class="lecture-meta">'
-        f'{watch_btn}'
-        f'<p class="lecture-title" data-title="{eta}">{et}</p>'
-        f'{copy_btn}'
-        f'</div>'
-        f'<div class="lecture-links">{video_links}{pdf_links}</div>'
-        f'</div>'
-    )
-
-
 def _build_content_html(structured: list) -> str:
     if not structured:
         return "<p class='empty-msg'>No content found.</p>"
-    parts       = []
-    global_idx  = 0
-
-    for sub in structured:
-        sname  = sub["name"]
+    parts = []
+    for sub_idx, sub in enumerate(structured):
+        sname = sub["name"]
         direct = sub.get("direct_lectures", [])
         topics = sub.get("topics", {})
-        total  = len(direct) + sum(len(t["lectures"]) for t in topics.values())
+        total = len(direct) + sum(len(t["lectures"]) for t in topics.values())
 
-        inner = ""
-        for lec in direct:
-            inner += _lecture_html(lec, global_idx)
-            global_idx += 1
+        direct_html = f'<div id="direct-{sub_idx}" class="topic-content"></div>' if direct else ''
 
+        topic_html = ""
         for tname, tdata in topics.items():
-            lec_html = ""
-            for lec in tdata["lectures"]:
-                lec_html += _lecture_html(lec, global_idx)
-                global_idx += 1
             tc = len(tdata["lectures"])
-            inner += (
+            tid = f"topic-{sub_idx}-{html.escape(tname, quote=True)}"
+            topic_html += (
                 f'<div class="topic-accordion">'
                 f'<button class="topic-header" aria-expanded="false"'
-                f' aria-controls="tc-{html.escape(tname,quote=True)}">'
+                f' aria-controls="{tid}" data-subidx="{sub_idx}" data-topic="{html.escape(tname, quote=True)}">'
                 f'<i class="fa-solid fa-folder" aria-hidden="true"></i>'
                 f'<span class="topic-name">{html.escape(tname)}</span>'
                 f'<span class="topic-count" aria-label="{tc} lectures">{tc}</span>'
                 f'<span class="topic-progress" aria-live="polite"></span>'
                 f'</button>'
-                f'<div class="topic-content" id="tc-{html.escape(tname,quote=True)}">{lec_html}</div>'
+                f'<div class="topic-content" id="{tid}"></div>'
                 f'</div>'
             )
 
+        escaped_sname = html.escape(sname, quote=True)
         parts.append(
             f'<div class="accordion-item">'
             f'<button class="accordion-header" aria-expanded="false"'
-            f' aria-controls="ac-{html.escape(sname,quote=True)}">'
+            f' aria-controls="ac-{escaped_sname}" data-subidx="{sub_idx}">'
             f'<span class="sub-name">{html.escape(sname)}</span>'
             f'<span class="sub-count" aria-label="{total} lectures">{total}</span>'
             f'<span class="sub-progress" aria-live="polite"></span>'
             f'<span class="acc-arrow" aria-hidden="true">&#43;</span>'
             f'</button>'
-            f'<div class="accordion-content" id="ac-{html.escape(sname,quote=True)}">{inner}</div>'
+            f'<div class="accordion-content" id="ac-{escaped_sname}">'
+            f'{topic_html}{direct_html}'
+            f'</div>'
             f'</div>'
         )
     return "\n".join(parts)
 
-
 # ═══════════════════════════════════════════════════════════════════════════
-#  CSS
+#  CSS (unchanged)
 # ═══════════════════════════════════════════════════════════════════════════
-
 _CSS = """
 /* ── CSS Variables ── */
 :root {
@@ -408,31 +356,26 @@ body{
 /* ── Player ── */
 .player-wrapper{
   background:#000;margin-bottom:12px;border-radius:var(--radius);
-  overflow:visible;                        /* FIX: was overflow:hidden — now menus pop out */
+  overflow:visible;
   box-shadow:0 8px 32px rgba(0,0,0,.28);
   position:sticky;top:calc(var(--header-h) + 3px);z-index:1000;
 }
-/* Inner clip so video corners stay rounded but menus escape */
 .player-wrapper > video,
 .player-wrapper > .plyr {
   border-radius:var(--radius);
   overflow:hidden;
 }
 
-/* ── Plyr settings/quality menu — always render ABOVE controls ── */
 .plyr__menu {
   z-index:10000 !important;
   position:relative !important;
 }
 
-
-/* ── Hide mute button and volume slider ── */
 .plyr__controls .plyr__control[data-plyr="mute"],
 .plyr__volume {
   display:none !important;
 }
 
-/* Loading spinner overlay */
 .player-loading{
   position:absolute;inset:0;background:rgba(0,0,0,.55);
   display:flex;align-items:center;justify-content:center;
@@ -446,7 +389,6 @@ body{
   animation:spin .8s linear infinite;
 }
 @keyframes spin{to{transform:rotate(360deg);}}
-/* Error overlay */
 .player-error{
   position:absolute;inset:0;background:rgba(0,0,0,.8);
   display:none;flex-direction:column;align-items:center;justify-content:center;
@@ -467,7 +409,6 @@ body{
 
 .plyr{border-radius:var(--radius);}
 
-/* Now playing */
 .now-playing{
   background:linear-gradient(135deg,#1e293b,#0f172a);
   border:1px solid rgba(14,165,233,.25);
@@ -489,7 +430,6 @@ body{
 .nav-btn:hover{background:rgba(255,255,255,.26);}
 .nav-btn:disabled{opacity:.3;cursor:not-allowed;}
 
-/* Auto-next banner */
 .autonext-banner{
   background:linear-gradient(135deg,#1e3a5f,#0f172a);
   border:1px solid rgba(14,165,233,.3);
@@ -511,7 +451,6 @@ body{
   border-radius:6px;padding:5px 12px;cursor:pointer;font-size:12px;font-weight:600;
 }
 
-/* ── Resume Banner ── */
 .resume-banner{
   background:linear-gradient(135deg,#1e293b,#0f172a);
   border:1px solid rgba(14,165,233,.2);
@@ -530,7 +469,6 @@ body{
   color:#94a3b8;border-radius:6px;padding:6px 10px;cursor:pointer;font-size:12px;
 }
 
-/* ── Search ── */
 .search-wrap{position:relative;margin-bottom:12px;}
 .search-wrap .fa-magnifying-glass{
   position:absolute;left:14px;top:50%;transform:translateY(-50%);
@@ -552,7 +490,6 @@ body{
 .search-clear:hover{color:var(--text);}
 .search-clear.visible{display:block;}
 
-/* ── Toolbar ── */
 .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
 .badge{
   font-size:12px;font-weight:500;border-radius:20px;padding:4px 12px;
@@ -561,7 +498,6 @@ body{
 .badge-progress{border-color:var(--accent2);color:var(--accent2);}
 .badge-result{border-color:var(--accent);color:var(--accent);}
 
-/* ── Subject Accordion ── */
 .accordion-item{
   margin-bottom:10px;border-radius:var(--radius);
   background:var(--card);box-shadow:var(--shadow);
@@ -596,7 +532,6 @@ html.dark .sub-count{background:#1e3a5f;color:#60a5fa;}
 }
 .accordion-content.open{padding-bottom:8px;}
 
-/* ── Topic Accordion ── */
 .topic-accordion{margin:8px 0;border-radius:var(--radius-sm);overflow:hidden;}
 .topic-header{
   width:100%;background:var(--bg);color:var(--text);border:none;
@@ -623,7 +558,6 @@ html.dark .topic-header.active{background:#0369a1;}
   padding:0 4px;
 }
 
-/* ── Lecture Row ── */
 .lecture-entry{
   padding:11px 0;border-bottom:1px solid var(--border);
   border-left:3px solid transparent;padding-left:6px;
@@ -665,7 +599,6 @@ html.dark .topic-header.active{background:#0369a1;}
 mark{background:#fef3c7;color:#92400e;border-radius:3px;padding:0 2px;}
 html.dark mark{background:#451a03;color:#fbbf24;}
 
-/* ── Buttons ── */
 .list-item{
   display:inline-flex;align-items:center;gap:6px;padding:7px 14px;
   border-radius:20px;text-decoration:none;font-size:13px;font-weight:500;
@@ -686,13 +619,11 @@ html.dark .video-item:hover,html.dark .video-item.playing{
 .pdf-item:hover{background:#ea580c;color:#fff;border-color:#ea580c;transform:translateY(-1px);}
 html.dark .pdf-item{background:#431407;color:#fb923c;border-color:#7c2d12;}
 
-/* YouTube button */
 .yt-item{background:#fff1f1;color:#cc0000;border-color:#ffb3b3;}
 .yt-item:hover,.yt-item.playing{background:#cc0000;color:#fff;border-color:#cc0000;transform:translateY(-1px);}
 html.dark .yt-item{background:#3d0000;color:#ff8080;border-color:#660000;}
 html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#fff;}
 
-/* YouTube embed wrapper */
 .yt-embed-wrapper{
   display:none;width:100%;aspect-ratio:16/9;
   border-radius:var(--radius);overflow:hidden;
@@ -710,10 +641,8 @@ html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#ff
 }
 .yt-open-link:hover{background:rgba(204,0,0,.9);}
 
-/* ── Empty state ── */
 .empty-msg{text-align:center;padding:48px;color:var(--muted);font-size:15px;}
 
-/* ── Footer ── */
 .footer-wrap{
   text-align:center;margin:24px 0 20px;
   padding:18px 0;border-top:1px solid var(--border);
@@ -727,7 +656,6 @@ html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#ff
 .footer-credit-btn:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.3);}
 .shortcut-hint{margin-top:12px;font-size:11px;color:var(--muted);line-height:2;}
 
-/* ── Drawer toggle ── */
 .kk-drawer-toggle{
   width:34px;height:34px;
   padding:0!important;
@@ -751,7 +679,6 @@ html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#ff
 .kk-drawer-toggle.active span:nth-child(2){opacity:0!important;transform:scale(0)!important;}
 .kk-drawer-toggle.active span:nth-child(3){transform:translateY(-6px) rotate(-45deg)!important;}
 
-/* ── Responsive ── */
 @media(max-width:600px){
   :root{--header-h:44px;}
   .header-title{font-size:13px;}
@@ -763,10 +690,6 @@ html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#ff
 @media(prefers-reduced-motion:reduce){
   *{transition:none!important;animation:none!important;}
 }
-
-/* =========================
-   FINAL PLYR MOBILE FIX
-   ========================= */
 
 .player-wrapper,
 .player-wrapper > .plyr,
@@ -791,13 +714,11 @@ html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#ff
     overflow-x: hidden !important;
 }
 
-/* Mobile speed menu */
 .plyr__menu__container [role="menu"]{
     max-height: 180px !important;
     overflow-y: auto !important;
 }
 
-/* Smooth scrolling */
 .plyr__menu__container::-webkit-scrollbar{
     width: 4px;
 }
@@ -805,15 +726,7 @@ html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#ff
 .plyr__menu__container::-webkit-scrollbar-thumb{
     border-radius: 10px;
 }
-
 """
-
-
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  DRAWER CSS + HTML + JS
-# ═══════════════════════════════════════════════════════════════════════════
 
 _DRAWER_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap');
@@ -982,11 +895,6 @@ _DRAWER_JS = r"""
 })();
 """
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  JAVASCRIPT
-# ═══════════════════════════════════════════════════════════════════════════
-
 _JS_BODY = r"""
 /* ═══════════════════════════════════
    STATE
@@ -1005,6 +913,8 @@ var lastSaveTime    = 0;
 var autoNextTimer   = null;
 var autoNextTarget  = null;
 var lastErrorUrl    = null;
+var renderedSubjects = {};
+var globalLectureIdx = 0;
 
 /* ═══════════════════════════════════
    TOAST
@@ -1158,37 +1068,39 @@ function initDarkMode() {
    EXPAND / COLLAPSE ALL
 ═══════════════════════════════════ */
 function expandAll() {
-  document.querySelectorAll('.accordion-header').forEach(function (b) {
-    b.classList.add('active');
-    b.setAttribute('aria-expanded', 'true');
-    var content = b.nextElementSibling;
+  document.querySelectorAll('.accordion-header').forEach(function (btn) {
+    var subIdx = parseInt(btn.dataset.subidx);
+    if (!renderedSubjects[subIdx]) renderLecturesForSubject(subIdx);
+    btn.classList.add('active');
+    btn.setAttribute('aria-expanded', 'true');
+    var content = btn.nextElementSibling;
     content.classList.add('open');
-    content.style.maxHeight = content.scrollHeight + 'px';
+    content.style.maxHeight = 'none';
   });
-  document.querySelectorAll('.topic-header').forEach(function (b) {
-    b.classList.add('active');
-    b.setAttribute('aria-expanded', 'true');
-    var content = b.nextElementSibling;
-    content.style.maxHeight = content.scrollHeight + 'px';
+  document.querySelectorAll('.topic-header').forEach(function (btn) {
+    btn.classList.add('active');
+    btn.setAttribute('aria-expanded', 'true');
+    var tc = btn.nextElementSibling;
+    if (tc) tc.style.maxHeight = '99999px';
   });
 }
 function collapseAll() {
-  document.querySelectorAll('.accordion-header.active').forEach(function (b) {
-    b.classList.remove('active');
-    b.setAttribute('aria-expanded', 'false');
-    var content = b.nextElementSibling;
+  document.querySelectorAll('.accordion-header.active').forEach(function (btn) {
+    btn.classList.remove('active');
+    btn.setAttribute('aria-expanded', 'false');
+    var content = btn.nextElementSibling;
     content.classList.remove('open');
     content.style.maxHeight = null;
   });
-  document.querySelectorAll('.topic-header.active').forEach(function (b) {
-    b.classList.remove('active');
-    b.setAttribute('aria-expanded', 'false');
-    b.nextElementSibling.style.maxHeight = null;
+  document.querySelectorAll('.topic-header.active').forEach(function (btn) {
+    btn.classList.remove('active');
+    btn.setAttribute('aria-expanded', 'false');
+    btn.nextElementSibling.style.maxHeight = null;
   });
 }
 
 /* ═══════════════════════════════════
-   SEARCH  (debounced 200 ms)
+   SEARCH  (works on rendered DOM)
 ═══════════════════════════════════ */
 var _searchTimer = null;
 function filterContent(rawTerm) {
@@ -1434,7 +1346,6 @@ function _showYTPlayer(ytId) {
   var frame = document.getElementById('yt-frame');
   var link  = document.getElementById('yt-open-link');
   if (pw)    pw.style.display = 'none';
-  /* youtube-nocookie.com = fewer restrictions, no enablejsapi = no origin check */
   if (frame) frame.src = 'https://www.youtube-nocookie.com/embed/' + ytId +
     '?autoplay=1&rel=0&fs=1&color=white';
   if (link)  link.href = 'https://www.youtube.com/watch?v=' + ytId;
@@ -1446,12 +1357,12 @@ function _showDirectPlayer() {
   var ytW   = document.getElementById('yt-embed-wrapper');
   var frame = document.getElementById('yt-frame');
   if (ytW)   ytW.style.display = 'none';
-  if (frame) frame.src = '';   /* stop YouTube audio */
+  if (frame) frame.src = '';
   if (pw)    pw.style.display = 'block';
 }
 
 /* ═══════════════════════════════════
-   PLAYER — PLAY VIDEO
+   PLAYER — PLAY VIDEO (with YouTube fallback)
 ═══════════════════════════════════ */
 function playVideo(event, element) {
   if (event) event.preventDefault();
@@ -1462,7 +1373,7 @@ function playVideo(event, element) {
   var gidx  = parseInt(element.dataset.gidx, 10);
   if (!ytId && !url) return;
 
-  // NEW: If it's a YouTube link but not embeddable, open in new tab
+  // YouTube fallback: if it's a yt-item but no embeddable ID, open in new tab
   if (!ytId && element.classList.contains('yt-item')) {
     window.open(url, '_blank');
     showToast('YouTube link opened in new tab', 'info');
@@ -1583,13 +1494,12 @@ function _attachEvents(startTime) {
 }
 
 /* ═══════════════════════════════════
-   PLAYER — LOAD VIDEO
+   PLAYER — LOAD VIDEO (HLS with no retry on fatal)
 ═══════════════════════════════════ */
 function loadNewVideo(url, startTime) {
   startTime = startTime || 0;
   var videoEl = document.getElementById('player');
 
-  /* FIX: mute & volume removed from controls array */
   var plyrOpts = {
     controls: [
       'play-large', 'play', 'progress', 'current-time',
@@ -1649,7 +1559,6 @@ function loadNewVideo(url, startTime) {
     hlsInstance.on(Hls.Events.ERROR, function (event, data) {
       if (data.fatal) {
         setLoading(false);
-        // HLS ko destroy karo, error dikhao, direct link de do
         try { hlsInstance.destroy(); } catch (e) {}
         hlsInstance = null;
         showError('Video load nahi ho saki. Direct link se khol kar dekh lo.');
@@ -1661,7 +1570,6 @@ function loadNewVideo(url, startTime) {
     videoEl.src = url;
     player = new Plyr(videoEl, plyrOpts);
     _attachEvents(startTime);
-
   } else {
     videoEl.src = url;
     player = new Plyr(videoEl, plyrOpts);
@@ -1776,12 +1684,94 @@ function _initKeyboard() {
 }
 
 /* ═══════════════════════════════════
-   ACCORDIONS
+   LAZY RENDERING
+═══════════════════════════════════ */
+function renderLecturesForSubject(subIdx) {
+  if (renderedSubjects[subIdx]) return;
+  var header = document.querySelector('.accordion-header[data-subidx="' + subIdx + '"]');
+  if (!header) return;
+  var contentId = header.getAttribute('aria-controls');
+  var content = document.getElementById(contentId);
+  if (!content) return;
+
+  var subjectLectures = LECTURES.filter(function(l) { return l.subIdx === subIdx; });
+  var direct = subjectLectures.filter(function(l) { return l.topic === null; });
+  var topics = {};
+  subjectLectures.forEach(function(l) {
+    if (l.topic) {
+      if (!topics[l.topic]) topics[l.topic] = [];
+      topics[l.topic].push(l);
+    }
+  });
+
+  // Render direct lectures
+  var directDiv = document.getElementById('direct-' + subIdx);
+  if (directDiv && direct.length > 0) {
+    var html = '';
+    direct.forEach(function(lec) { html += _renderLectureHTML(lec, globalLectureIdx++); });
+    directDiv.innerHTML = html;
+  }
+
+  // Render each topic
+  for (var tname in topics) {
+    var tid = 'topic-' + subIdx + '-' + tname.replace(/[^a-zA-Z0-9]/g, '_');
+    var topicDiv = document.getElementById(tid);
+    if (topicDiv) {
+      var html = '';
+      topics[tname].forEach(function(lec) { html += _renderLectureHTML(lec, globalLectureIdx++); });
+      topicDiv.innerHTML = html;
+    }
+  }
+  renderedSubjects[subIdx] = true;
+  updateWatchedUI();
+}
+
+function _renderLectureHTML(lec, gidx) {
+  var title = lec.title;
+  var lid = lec.lid;
+  var videos = lec.videos;
+  var pdfs = lec.pdfs;
+  var et = title;
+  var eta = title;
+  var multi = videos.length > 1;
+
+  var videoLinks = '';
+  for (var i = 0; i < videos.length; i++) {
+    var vurl = videos[i];
+    var ytId = _getYtId(vurl);
+    var isYt = !!ytId;
+    var isProbablyYt = !isYt && (vurl.indexOf('youtube.com/') !== -1 || vurl.indexOf('youtu.be/') !== -1);
+    var label = multi ? 'Part ' + (i+1) + ' ▶' : (isYt || isProbablyYt ? '▶ YouTube' : '▶ Play');
+    var extraCls = (isYt || isProbablyYt) ? ' yt-item' : '';
+    var dataPart = isYt ? 'data-yt="' + ytId + '"' : 'data-url="' + vurl + '"';
+    var ariaLbl = isYt ? 'Watch on YouTube: ' + eta : (isProbablyYt ? 'Open YouTube link: ' + eta : 'Play ' + eta + (multi ? ' part ' + (i+1) : ''));
+    videoLinks += '<a href="#" class="list-item video-item' + extraCls + '" role="button" tabindex="0" ' +
+      dataPart + ' data-lid="' + lid + '" data-title="' + eta + '" data-gidx="' + gidx + '" ' +
+      'aria-label="' + ariaLbl + '" onclick="playVideo(event,this)" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();playVideo(event,this);}">' + label + '</a>';
+  }
+
+  var pdfLinks = '';
+  for (var j = 0; j < pdfs.length; j++) {
+    var eu = pdfs[j];
+    pdfLinks += '<a href="' + eu + '" target="_blank" rel="noopener noreferrer" class="list-item pdf-item" aria-label="Open PDF for ' + eta + '"><i class="fa-solid fa-file-pdf" aria-hidden="true"></i>&nbsp;PDF</a>';
+  }
+
+  var watchBtn = '<button class="watch-btn" data-lid="' + lid + '" onclick="toggleWatched(\'' + lid + '\')" aria-label="Mark as watched" aria-pressed="false" title="Mark watched">&#9675;</button>';
+  var copyBtn = videos.length ? '<button class="copy-btn" data-lid="' + lid + '" onclick="copyLectureLink(\'' + lid + '\')" aria-label="Copy link" title="Copy link"><i class="fa-solid fa-link" aria-hidden="true"></i></button>' : '';
+
+  return '<div class="lecture-entry" data-lid="' + lid + '" data-gidx="' + gidx + '">' +
+    '<div class="lecture-meta">' + watchBtn + '<p class="lecture-title" data-title="' + eta + '">' + et + '</p>' + copyBtn + '</div>' +
+    '<div class="lecture-links">' + videoLinks + pdfLinks + '</div></div>';
+}
+
+/* ═══════════════════════════════════
+   ACCORDIONS (lazy-aware)
 ═══════════════════════════════════ */
 function _initAccordions() {
   document.querySelectorAll('.accordion-header').forEach(function (btn) {
     btn.addEventListener('click', function () {
       var isActive = btn.classList.contains('active');
+      // Close other subjects
       document.querySelectorAll('.accordion-header').forEach(function (b) {
         if (b !== btn) {
           b.classList.remove('active');
@@ -1791,7 +1781,10 @@ function _initAccordions() {
           c.style.maxHeight = null;
         }
       });
+
       if (!isActive) {
+        var subIdx = parseInt(btn.dataset.subidx);
+        if (!renderedSubjects[subIdx]) renderLecturesForSubject(subIdx);
         btn.classList.add('active');
         btn.setAttribute('aria-expanded', 'true');
         var content = btn.nextElementSibling;
@@ -1817,35 +1810,14 @@ function _initAccordions() {
   });
 
   document.querySelectorAll('.topic-header').forEach(function (btn) {
-    btn.addEventListener('click', function () {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
       var isActive = btn.classList.contains('active');
-      var pc       = btn.closest('.accordion-content');
-
-      if (pc) {
-        pc.querySelectorAll('.topic-header').forEach(function (b) {
-          if (b !== btn) {
-            b.classList.remove('active');
-            b.setAttribute('aria-expanded', 'false');
-            b.nextElementSibling.style.maxHeight = null;
-          }
-        });
-      }
-
       if (!isActive) {
         btn.classList.add('active');
         btn.setAttribute('aria-expanded', 'true');
         var tc = btn.nextElementSibling;
         tc.style.maxHeight = tc.scrollHeight + 'px';
-
-        if (pc) {
-          var subHeader = pc.previousElementSibling;
-          if (subHeader && !subHeader.classList.contains('active')) {
-            subHeader.classList.add('active');
-            subHeader.setAttribute('aria-expanded', 'true');
-            pc.classList.add('open');
-            pc.style.maxHeight = 'none';
-          }
-        }
       } else {
         btn.classList.remove('active');
         btn.setAttribute('aria-expanded', 'false');
@@ -1868,20 +1840,14 @@ document.addEventListener('DOMContentLoaded', function () {
 });
 """
 
-
 def _build_js(file_key: str) -> str:
     safe_key = re.sub(r"[^a-zA-Z0-9_-]", "_", file_key)[:48]
     return (
-        "const FILE_KEY = " + json.dumps(safe_key) + ";\n"
+        "const FILE_KEY = " + _json.dumps(safe_key) + ";\n"
         + _JS_BODY
         + "\n"
         + _DRAWER_JS
     )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  ANTI-FOUC
-# ═══════════════════════════════════════════════════════════════════════════
 
 _ANTI_FOUC_JS = textwrap.dedent("""\
     (function(){
@@ -1893,16 +1859,12 @@ _ANTI_FOUC_JS = textwrap.dedent("""\
     })();
 """)
 
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  MAIN ENTRY POINT
-# ═══════════════════════════════════════════════════════════════════════════
-
 def generate_html(file_name: str, structured_list: list) -> str:
     content_html = _build_content_html(structured_list)
     total        = count_total_lectures(structured_list)
     js           = _build_js(file_name)
     ename        = html.escape(file_name)
+    lecture_json = _json.dumps(_lectures_to_json(structured_list), ensure_ascii=False)
 
     lines = [
         '<!DOCTYPE html>',
@@ -1920,103 +1882,70 @@ def generate_html(file_name: str, structured_list: list) -> str:
         f'<style>{_DRAWER_CSS}</style>',
         '</head>',
         '<body>',
-
         '<div id="toast-container" aria-live="polite" aria-atomic="false"></div>',
         _DRAWER_HTML,
-
-        # ── Header ──
         '<header class="header" role="banner">',
         f'  <span class="header-title">{ename}</span>',
         '  <div class="header-controls">',
         '    <button onclick="expandAll()" class="ctrl-btn" title="Expand all (E)" aria-label="Expand all">\u229e</button>',
         '    <button onclick="collapseAll()" class="ctrl-btn" title="Collapse all (C)" aria-label="Collapse all">\u229f</button>',
         '    <button onclick="toggleDark()" class="ctrl-btn" id="darkBtn" title="Toggle dark mode (D)" aria-label="Toggle dark mode">\U0001f319</button>',
-        '    <button class="kk-drawer-toggle" id="kk-drawer-toggle"',
-        '      aria-label="Open menu" aria-expanded="false" aria-haspopup="true">',
+        '    <button class="kk-drawer-toggle" id="kk-drawer-toggle" aria-label="Open menu" aria-expanded="false" aria-haspopup="true">',
         '      <span></span><span></span><span></span>',
         '    </button>',
         '  </div>',
         '</header>',
-
         '<div class="progress-bar-track" role="progressbar" aria-label="Overall progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">',
         '  <div class="progress-bar-fill" id="progress-fill"></div>',
         '</div>',
-
         '<main class="main-container" id="main-content">',
-
         '  <div class="player-wrapper" id="player-wrapper">',
-        '    <video id="player" playsinline controls preload="none"',
-        '      aria-label="Lecture video player"></video>',
-        '    <div class="player-loading" id="player-loading" aria-live="polite" aria-label="Loading video">',
-        '      <div class="spinner" role="status"></div>',
-        '    </div>',
+        '    <video id="player" playsinline controls preload="none" aria-label="Lecture video player"></video>',
+        '    <div class="player-loading" id="player-loading" aria-live="polite" aria-label="Loading video"><div class="spinner" role="status"></div></div>',
         '    <div class="player-error" id="player-error" role="alert">',
         '      <div class="player-error-title">\u26a0\ufe0f Failed to load video</div>',
         '      <p id="player-error-msg">An error occurred while loading the video.</p>',
         '      <button class="retry-btn" onclick="retryVideo()">\u21ba Retry</button>',
         '      <a class="retry-btn open-link-btn" id="player-error-link" href="#" target="_blank" rel="noopener" style="display:none">\U0001f517 Direct Link Kholo</a>',
         '    </div>',
-        '  </div>',   # end .player-wrapper
-
-        # ── YouTube embed (shown instead of Plyr for YouTube URLs) ──
-        '<div class="yt-embed-wrapper" id="yt-embed-wrapper">',
-        '  <iframe id="yt-frame" src=""',
-        '    allow="autoplay; fullscreen; encrypted-media; picture-in-picture"',
-        '    referrerpolicy="no-referrer-when-downgrade"',
-        '    allowfullscreen',
-        '    aria-label="YouTube video player"></iframe>',
-        '  <a id="yt-open-link" class="yt-open-link" href="#" target="_blank" rel="noopener">',
-        '    &#9654; Open in YouTube',
-        '  </a>',
-        '</div>',
-
+        '  </div>',
+        '  <div class="yt-embed-wrapper" id="yt-embed-wrapper">',
+        '    <iframe id="yt-frame" src="" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" referrerpolicy="no-referrer-when-downgrade" allowfullscreen aria-label="YouTube video player"></iframe>',
+        '    <a id="yt-open-link" class="yt-open-link" href="#" target="_blank" rel="noopener">&#9654; Open in YouTube</a>',
+        '  </div>',
         '  <div id="now-playing" class="now-playing" aria-live="polite">',
         '    <span class="now-playing-dot" aria-hidden="true"></span>',
         '    <span class="now-playing-title" id="now-playing-title"></span>',
         '    <div class="now-playing-nav">',
-        '      <button class="nav-btn" id="btn-prev" onclick="playPrev()" disabled',
-        '        title="Previous (P)" aria-label="Previous lecture">\u276e Prev</button>',
-        '      <button class="nav-btn" id="btn-next" onclick="playNext()"',
-        '        title="Next (N)" aria-label="Next lecture">Next \u276f</button>',
+        '      <button class="nav-btn" id="btn-prev" onclick="playPrev()" disabled title="Previous (P)" aria-label="Previous lecture">\u276e Prev</button>',
+        '      <button class="nav-btn" id="btn-next" onclick="playNext()" title="Next (N)" aria-label="Next lecture">Next \u276f</button>',
         '    </div>',
         '  </div>',
-
         '  <div id="autonext-banner" class="autonext-banner" role="status">',
         '    <div class="autonext-count" id="autonext-count">5</div>',
         '    <div class="autonext-label" id="autonext-label">Loading next…</div>',
         '    <button class="autonext-play" onclick="playAutoNext()">\u25b6 Play Now</button>',
         '    <button class="autonext-cancel" onclick="cancelAutoNext()">\u2715 Cancel</button>',
         '  </div>',
-
         '  <div id="resume-banner" class="resume-banner" role="status">',
         '    <span id="resume-text"></span>',
         '    <button class="resume-btn" onclick="resumeVideo()">\u25b6 Resume</button>',
         '    <button class="resume-dismiss" onclick="dismissResume()" aria-label="Dismiss">\u2715</button>',
         '  </div>',
-
         '  <div class="search-wrap" role="search">',
         '    <i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i>',
-        '    <input class="search-input" type="search" id="searchInput"',
-        '      placeholder="Search lectures\u2026 (press /)" autocomplete="off"',
-        '      aria-label="Search lectures"',
-        '      oninput="filterContent(this.value)">',
-        '    <button class="search-clear" id="search-clear"',
-        '      onclick="clearSearch()" aria-label="Clear search">\u2715</button>',
+        '    <input class="search-input" type="search" id="searchInput" placeholder="Search lectures\u2026 (press /)" autocomplete="off" aria-label="Search lectures" oninput="filterContent(this.value)">',
+        '    <button class="search-clear" id="search-clear" onclick="clearSearch()" aria-label="Clear search">\u2715</button>',
         '  </div>',
-
         '  <div class="toolbar" role="toolbar" aria-label="Lecture info">',
         f'    <span class="badge" aria-label="{total} total lectures">{total} lectures</span>',
         '    <span class="badge badge-result" id="search-result-count" style="display:none" aria-live="polite"></span>',
         '    <span class="badge badge-progress" id="progress-badge" aria-live="polite"></span>',
         '  </div>',
-
         f'  <div id="content-container" role="list" aria-label="Course content">{content_html}</div>',
         '</main>',
-
-        # ── Footer — Telegram link, text "Babu Bhai Kundan" ──
         '<footer class="footer-wrap">',
-        '  <a class="footer-credit-btn" href="https://t.me/BabuBhaiKundan"',
-        '     target="_blank" rel="noopener noreferrer" aria-label="Telegram: Babu Bhai Kundan">',
+        '  <a class="footer-credit-btn" href="https://t.me/BabuBhaiKundan" target="_blank" rel="noopener noreferrer" aria-label="Telegram: Babu Bhai Kundan">',
         '    <i class="fa-brands fa-telegram" aria-hidden="true" style="color:#29b5e8;font-size:18px"></i>',
         '    <span style="color:#ffffff;font-weight:800;font-size:14px">Babu Bhai Kundan</span>',
         '  </a>',
@@ -2032,12 +1961,11 @@ def generate_html(file_name: str, structured_list: list) -> str:
         '    <kbd>/</kbd>=search',
         '  </p>',
         '</footer>',
-
         '<script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>',
         '<script src="https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>',
+        f'<script>var LECTURES = {lecture_json};</script>',
         f'<script>{js}</script>',
         '</body>',
         '</html>',
     ]
-
     return "\n".join(lines)
