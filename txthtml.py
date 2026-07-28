@@ -37,7 +37,29 @@ def _transform_url(url: str) -> str:
             1
         )
     return url
+    
+    
+import os
 
+# Allowed video extensions
+VIDEO_EXTENSIONS = {'.mp4', '.m3u8', '.mov', '.webm', '.mkv', '.flv', '.avi', '.ts', '.ogg'}
+
+def _sanitize_id(raw: str) -> str:
+    """Replace non-alphanumeric characters with underscore for HTML ID."""
+    return re.sub(r'[^a-zA-Z0-9]', '_', raw)
+    
+    
+def _is_valid_media_url(url: str) -> bool:
+    """True if URL is a video file, YouTube, or PDF."""
+    if _is_youtube_url(url) or _get_youtube_id(url):
+        return True
+    if '.pdf' in url.lower():
+        return True
+    path = url.split('?')[0]
+    ext = os.path.splitext(path)[1].lower()
+    return ext in VIDEO_EXTENSIONS
+    
+    
 # ═══════════════════════════════════════════════════════════════════════════
 #  DATA EXTRACTION
 # ═══════════════════════════════════════════════════════════════════════════
@@ -57,7 +79,7 @@ def extract_names_and_urls(file_content: str) -> list:
         if ":" in line:
             name, _, url = line.partition(":")
             name, url = name.strip(), url.strip()
-            if name and url:
+            if name and url and _is_valid_media_url(url):
                 pairs.append((name, _transform_url(url)))
     return pairs
 
@@ -104,6 +126,8 @@ def structure_data_in_order(urls: list) -> list:
                 subj   = ch.get("subject_id", "General")
                 ctitle = ch.get("title", "")
                 clink  = _transform_url(ch.get("link", ""))
+                if not _is_valid_media_url(clink):
+                    continue   # skip invalid
                 ctopic = extract_topic(ctitle)
                 lid    = _make_lid(subj, ctopic, ctitle)
                 if subj not in subject_map:
@@ -267,49 +291,47 @@ def _lecture_html(lec: dict, global_index: int) -> str:
 def _build_content_html(structured: list) -> str:
     if not structured:
         return "<p class='empty-msg'>No content found.</p>"
-    parts       = []
-    global_idx  = 0
-
-    for sub in structured:
-        sname  = sub["name"]
+    parts = []
+    for sub_idx, sub in enumerate(structured):
+        sname = sub["name"]
         direct = sub.get("direct_lectures", [])
         topics = sub.get("topics", {})
-        total  = len(direct) + sum(len(t["lectures"]) for t in topics.values())
+        total = len(direct) + sum(len(t["lectures"]) for t in topics.values())
 
-        inner = ""
-        for lec in direct:
-            inner += _lecture_html(lec, global_idx)
-            global_idx += 1
+        # direct lectures ka khaali container
+        direct_container = f'<div id="direct-{sub_idx}" class="topic-content"></div>' if direct else ''
 
+        # topic buttons with empty content div
+        topic_buttons = []
         for tname, tdata in topics.items():
-            lec_html = ""
-            for lec in tdata["lectures"]:
-                lec_html += _lecture_html(lec, global_idx)
-                global_idx += 1
             tc = len(tdata["lectures"])
-            inner += (
+            tid = f"topic-{sub_idx}-{_sanitize_id(tname)}"
+            topic_buttons.append(
                 f'<div class="topic-accordion">'
                 f'<button class="topic-header" aria-expanded="false"'
-                f' aria-controls="tc-{html.escape(tname,quote=True)}">'
+                f' aria-controls="{tid}" data-subidx="{sub_idx}" data-topic="{html.escape(tname, quote=True)}">'
                 f'<i class="fa-solid fa-folder" aria-hidden="true"></i>'
                 f'<span class="topic-name">{html.escape(tname)}</span>'
                 f'<span class="topic-count" aria-label="{tc} lectures">{tc}</span>'
                 f'<span class="topic-progress" aria-live="polite"></span>'
                 f'</button>'
-                f'<div class="topic-content" id="tc-{html.escape(tname,quote=True)}">{lec_html}</div>'
+                f'<div class="topic-content" id="{tid}"></div>'
                 f'</div>'
             )
 
+        escaped_sname = html.escape(sname, quote=True)
         parts.append(
             f'<div class="accordion-item">'
             f'<button class="accordion-header" aria-expanded="false"'
-            f' aria-controls="ac-{html.escape(sname,quote=True)}">'
+            f' aria-controls="ac-{escaped_sname}" data-subidx="{sub_idx}">'
             f'<span class="sub-name">{html.escape(sname)}</span>'
             f'<span class="sub-count" aria-label="{total} lectures">{total}</span>'
             f'<span class="sub-progress" aria-live="polite"></span>'
             f'<span class="acc-arrow" aria-hidden="true">&#43;</span>'
             f'</button>'
-            f'<div class="accordion-content" id="ac-{html.escape(sname,quote=True)}">{inner}</div>'
+            f'<div class="accordion-content" id="ac-{escaped_sname}">'
+            f'{"".join(topic_buttons)}{direct_container}'
+            f'</div>'
             f'</div>'
         )
     return "\n".join(parts)
@@ -1005,6 +1027,8 @@ var lastSaveTime    = 0;
 var autoNextTimer   = null;
 var autoNextTarget  = null;
 var lastErrorUrl    = null;
+var renderedSubjects = {};  
+var globalLectureIdx = 0;   
 
 /* ═══════════════════════════════════
    TOAST
@@ -1158,20 +1182,24 @@ function initDarkMode() {
    EXPAND / COLLAPSE ALL
 ═══════════════════════════════════ */
 function expandAll() {
-  document.querySelectorAll('.accordion-header').forEach(function (b) {
-    b.classList.add('active');
-    b.setAttribute('aria-expanded', 'true');
-    var content = b.nextElementSibling;
+  document.querySelectorAll('.accordion-header').forEach(function (btn) {
+    var subIdx = parseInt(btn.getAttribute('data-subidx'));
+    if (!isNaN(subIdx) && !renderedSubjects[subIdx]) {
+      renderLecturesForSubject(subIdx);
+    }
+    btn.classList.add('active');
+    btn.setAttribute('aria-expanded', 'true');
+    var content = btn.nextElementSibling;
     content.classList.add('open');
-    content.style.maxHeight = content.scrollHeight + 'px';
+    content.style.maxHeight = 'none';
   });
   document.querySelectorAll('.topic-header').forEach(function (b) {
     b.classList.add('active');
     b.setAttribute('aria-expanded', 'true');
-    var content = b.nextElementSibling;
-    content.style.maxHeight = content.scrollHeight + 'px';
+    b.nextElementSibling.style.maxHeight = 'none';
   });
 }
+
 function collapseAll() {
   document.querySelectorAll('.accordion-header.active').forEach(function (b) {
     b.classList.remove('active');
@@ -1204,6 +1232,15 @@ function clearSearch() {
 }
 
 function _doFilter(rawTerm) {
+
+  // Ensure all subjects are rendered so we can search everywhere
+  document.querySelectorAll('.accordion-header').forEach(function(btn) {
+    var idx = parseInt(btn.getAttribute('data-subidx'));
+    if (!isNaN(idx) && !renderedSubjects[idx]) {
+      renderLecturesForSubject(idx);
+    }
+  });
+  
   var term    = rawTerm.trim().toLowerCase();
   var esc_re  = term ? new RegExp('(' + term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi') : null;
   var visible = 0;
@@ -1687,6 +1724,102 @@ function updateQuality(quality) {
    DOUBLE-TAP / DOUBLE-CLICK SEEK
 ═══════════════════════════════════ */
 var _lastTapTime = 0;
+
+function sanitizeId(str) {
+    return str.replace(/[^a-zA-Z0-9]/g, '_');
+}
+
+/* ── Lazy Rendering ── */
+function renderLecturesForSubject(subIdx) {
+  if (renderedSubjects[subIdx]) return;
+
+  var header = document.querySelector('.accordion-header[data-subidx="' + subIdx + '"]');
+  if (!header) return;
+  var contentId = header.getAttribute('aria-controls');
+  var content = document.getElementById(contentId);
+  if (!content) return;
+
+  var subjectLectures = LECTURES.filter(function(l) { return l.subIdx === subIdx; });
+  var direct = subjectLectures.filter(function(l) { return l.topic === null; });
+  var topics = {};
+  subjectLectures.forEach(function(l) {
+    if (l.topic) {
+      if (!topics[l.topic]) topics[l.topic] = [];
+      topics[l.topic].push(l);
+    }
+  });
+
+  // Render direct lectures
+  var directDiv = document.getElementById('direct-' + subIdx);
+  if (directDiv && direct.length > 0) {
+    var html = '';
+    direct.forEach(function(lec) {
+      html += _renderLectureHTML(lec, globalLectureIdx++);
+    });
+    directDiv.innerHTML = html;
+  }
+
+  // Render each topic
+  for (var tname in topics) {
+    var tid = 'topic-' + subIdx + '-' + sanitizeId(tname);
+    var topicDiv = document.getElementById(tid);
+    if (topicDiv) {
+      var html = '';
+      topics[tname].forEach(function(lec) {
+        html += _renderLectureHTML(lec, globalLectureIdx++);
+      });
+      topicDiv.innerHTML = html;
+    }
+  }
+
+  renderedSubjects[subIdx] = true;
+  updateWatchedUI(); // apply watched state to newly rendered lectures
+}
+
+
+function htmlAttrEscape(str) {
+    return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+
+function _renderLectureHTML(lec, gidx) {
+  var title = lec.title;
+  var lid = lec.lid;
+  var videos = lec.videos;
+  var pdfs = lec.pdfs;
+  var et = title;
+  var eta = htmlAttrEscape(title);
+  var multi = videos.length > 1;
+
+  var videoLinks = '';
+  for (var i = 0; i < videos.length; i++) {
+    var vurl = videos[i];
+    var ytId = _getYtId(vurl);
+    var isYt = !!ytId;
+    var isProbablyYt = !isYt && (vurl.indexOf('youtube.com/') !== -1 || vurl.indexOf('youtu.be/') !== -1);
+    var label = multi ? 'Part ' + (i+1) + ' &#9654;' : (isYt || isProbablyYt ? '&#9654;&nbsp;YouTube' : '&#9654;&nbsp;Play');
+    var extraCls = (isYt || isProbablyYt) ? ' yt-item' : '';
+    var dataPart = isYt ? 'data-yt="' + htmlAttrEscape(ytId) + '"' : 'data-url="' + htmlAttrEscape(vurl) + '"';
+    var ariaLbl = isYt ? 'Watch on YouTube: ' + eta : (isProbablyYt ? 'Open YouTube link: ' + eta : 'Play ' + eta + (multi ? ' part ' + (i+1) : ''));
+    videoLinks += '<a href="#" class="list-item video-item' + extraCls + '" role="button" tabindex="0" ' +
+      dataPart + ' data-lid="' + lid + '" data-title="' + eta + '" data-gidx="' + gidx + '" ' +
+      'aria-label="' + ariaLbl + '" onclick="playVideo(event,this)" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();playVideo(event,this);}">' + label + '</a>';
+  }
+
+  var pdfLinks = '';
+  for (var j = 0; j < pdfs.length; j++) {
+    var eu = pdfs[j];
+    pdfLinks += '<a href="' + eu + '" target="_blank" rel="noopener noreferrer" class="list-item pdf-item" aria-label="Open PDF for ' + eta + '"><i class="fa-solid fa-file-pdf" aria-hidden="true"></i>&nbsp;PDF</a>';
+  }
+
+  var watchBtn = '<button class="watch-btn" data-lid="' + lid + '" onclick="toggleWatched(\'' + lid + '\')" aria-label="Mark as watched" aria-pressed="false" title="Mark watched">&#9675;</button>';
+  var copyBtn = videos.length ? '<button class="copy-btn" data-lid="' + lid + '" onclick="copyLectureLink(\'' + lid + '\')" aria-label="Copy link" title="Copy link"><i class="fa-solid fa-link" aria-hidden="true"></i></button>' : '';
+
+  return '<div class="lecture-entry" data-lid="' + lid + '" data-gidx="' + gidx + '">' +
+    '<div class="lecture-meta">' + watchBtn + '<p class="lecture-title" data-title="' + eta + '">' + et + '</p>' + copyBtn + '</div>' +
+    '<div class="lecture-links">' + videoLinks + pdfLinks + '</div></div>';
+}
+
 function _setupDoubleTapSeek() {
   var wrapper = document.querySelector('.player-wrapper');
   if (!wrapper) return;
@@ -1792,6 +1925,11 @@ function _initAccordions() {
         }
       });
       if (!isActive) {
+        // Lazy render subject on first expand
+        var subIdx = parseInt(btn.getAttribute('data-subidx'));
+        if (!isNaN(subIdx) && !renderedSubjects[subIdx]) {
+          renderLecturesForSubject(subIdx);
+        }
         btn.classList.add('active');
         btn.setAttribute('aria-expanded', 'true');
         var content = btn.nextElementSibling;
@@ -1897,7 +2035,34 @@ _ANTI_FOUC_JS = textwrap.dedent("""\
 # ═══════════════════════════════════════════════════════════════════════════
 #  MAIN ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════
+import json as _json
 
+def _lectures_to_json(structured):
+    """Flat list of lectures with subIdx and topic info."""
+    data = []
+    for sub_idx, sub in enumerate(structured):
+        for lec in sub.get("direct_lectures", []):
+            data.append({
+                "subIdx": sub_idx,
+                "topic": None,
+                "videos": lec["videos"],
+                "pdfs": lec["pdfs"],
+                "title": lec["title"],
+                "lid": lec["lid"]
+            })
+        for tname, tdata in sub.get("topics", {}).items():
+            for lec in tdata["lectures"]:
+                data.append({
+                    "subIdx": sub_idx,
+                    "topic": tname,
+                    "videos": lec["videos"],
+                    "pdfs": lec["pdfs"],
+                    "title": lec["title"],
+                    "lid": lec["lid"]
+                })
+    return data
+    
+    
 def generate_html(file_name: str, structured_list: list) -> str:
     content_html = _build_content_html(structured_list)
     total        = count_total_lectures(structured_list)
@@ -2034,7 +2199,9 @@ def generate_html(file_name: str, structured_list: list) -> str:
         '</footer>',
 
         '<script src="https://cdn.plyr.io/3.7.8/plyr.js"></script>',
+        
         '<script src="https://cdn.jsdelivr.net/npm/hls.js@latest/dist/hls.min.js"></script>',
+        f'<script>var LECTURES = {_json.dumps(_lectures_to_json(structured_list), ensure_ascii=False)};</script>',
         f'<script>{js}</script>',
         '</body>',
         '</html>',
