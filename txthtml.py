@@ -1470,7 +1470,6 @@ function playVideo(event, element) {
   }
 
   _destroyPlayer();
-  ...  // rest of the function unchanged
   hideError();
   lastErrorUrl = url;
 
