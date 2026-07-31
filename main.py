@@ -154,7 +154,7 @@ async def start_command(client: Client, message: Message):
     await database.upsert_user(
         message.from_user.id,
         message.from_user.username,
-        message.from_user.full_name,
+        (message.from_user.first_name or "") + " " + (message.from_user.last_name or ""),
     )
     await message.reply_photo(
         photo="https://babubhaikundan.pages.dev/Assets/logo/bbk.png",
@@ -246,6 +246,44 @@ async def stats_command(client: Client, message: Message):
     )
 
 
+async def _run_broadcast(reply_msg: Message, prog_msg: Message, all_users: list):
+    """Background task for broadcasting so the main bot loop doesn't freeze."""
+    success, failed = 0, 0
+    for i, uid in enumerate(all_users):
+        try:
+            await reply_msg.copy(chat_id=uid)
+            success += 1
+        except FloodWait as e:
+            await asyncio.sleep(e.value + 2)
+            try:
+                await reply_msg.copy(chat_id=uid)
+                success += 1
+            except Exception:
+                failed += 1
+        except Exception:
+            failed += 1
+
+        if (i + 1) % 25 == 0:
+            try:
+                await prog_msg.edit_text(
+                    f"📡 Broadcasting... {i + 1}/{len(all_users)}\n"
+                    f"✅ Sent: {success}  ❌ Failed: {failed}"
+                )
+            except Exception:
+                pass
+        await asyncio.sleep(0.07)   # ~14 msg/s — safe under Telegram limits
+
+    try:
+        await prog_msg.edit_text(
+            f"✅ **Broadcast Complete!**\n\n"
+            f"📊 Total: {len(all_users)}\n"
+            f"✅ Sent:   {success}\n"
+            f"❌ Failed: {failed}"
+        )
+    except Exception:
+        pass
+
+
 @bot.on_message(filters.command("broadcast") & filters.private)
 async def broadcast_command(client: Client, message: Message):
     if not _is_admin(message.from_user.id):
@@ -267,38 +305,10 @@ async def broadcast_command(client: Client, message: Message):
     prog_msg = await message.reply_text(
         f"📡 Broadcast shuru... **{len(all_users)}** users ko bhej raha hoon."
     )
-    success, failed = 0, 0
+    
+    # FIX: Run broadcast independently in the background
+    asyncio.create_task(_run_broadcast(message.reply_to_message, prog_msg, all_users))
 
-    for i, uid in enumerate(all_users):
-        try:
-            await message.reply_to_message.copy(chat_id=uid)
-            success += 1
-        except FloodWait as e:
-            await asyncio.sleep(e.value + 2)
-            try:
-                await message.reply_to_message.copy(chat_id=uid)
-                success += 1
-            except Exception:
-                failed += 1
-        except Exception:
-            failed += 1
-
-        if (i + 1) % 25 == 0:
-            try:
-                await prog_msg.edit_text(
-                    f"📡 Broadcasting... {i + 1}/{len(all_users)}\n"
-                    f"✅ Sent: {success}  ❌ Failed: {failed}"
-                )
-            except Exception:
-                pass
-        await asyncio.sleep(0.07)   # ~14 msg/s — safe under Telegram limits
-
-    await prog_msg.edit_text(
-        f"✅ **Broadcast Complete!**\n\n"
-        f"📊 Total: {len(all_users)}\n"
-        f"✅ Sent:   {success}\n"
-        f"❌ Failed: {failed}"
-    )
 
 
 # ── kundan alias ───────────────────────────────────────────────────────────
@@ -325,9 +335,12 @@ async def handle_document(client: Client, message: Message):
 
     doc = message.document
 
+    # FIX: Fallback for missing file names (Crash Prevention during forwards)
+    safe_name = os.path.basename(doc.file_name or "Untitled_File.txt")
+    
     # 2. File type check
-    safe_name = os.path.basename(doc.file_name or "")
     if not safe_name.lower().endswith(".txt"):
+
         await message.reply_text(
             "⚠️ **Invalid File!**\n\nSirf `.txt` files accept hoti hain.",
             quote=True,
@@ -343,19 +356,39 @@ async def handle_document(client: Client, message: Message):
         return
 
     file_name_only = os.path.splitext(safe_name)[0]
-    user_dir       = os.path.join(DOWNLOADS_DIR, str(message.id))
+    # FIX: Creating a globally unique folder using chat_id + message_id to prevent concurrency collision
+    user_dir       = os.path.join(DOWNLOADS_DIR, f"{message.chat.id}_{message.id}")
     downloaded_path = None
+
 
     prog = await message.reply_text("`⏳ Downloading...`", quote=True)
 
     try:
+        # FIX: Real-time Progress Bar implementation
+        import time
+        last_update_time = time.time()
+        
+        async def download_progress(current, total):
+            nonlocal last_update_time
+            now = time.time()
+            # 1.5 seconds ka gap taaki FloodWait error na aaye
+            if now - last_update_time > 1.5:  
+                percent = round((current / total) * 100, 1)
+                try:
+                    await prog.edit_text(f"`⏳ Downloading... {percent}%`")
+                except Exception:
+                    pass
+                last_update_time = now
+
         # 4. Download
         os.makedirs(user_dir, exist_ok=True)
         downloaded_path = await message.download(
-            file_name=os.path.join(user_dir, safe_name)
+            file_name=os.path.join(user_dir, safe_name),
+            progress=download_progress
         )
 
         await prog.edit_text("`⚙️ Processing aur HTML generate ho raha hai...`")
+
 
         # 5. Read with encoding fallback
         file_content = _read_file(downloaded_path)
@@ -443,7 +476,7 @@ async def recheck_sub_callback(client: Client, callback_query: CallbackQuery):
     await callback_query.answer("✅ Verified! Welcome!", show_alert=False)
     await callback_query.message.delete()
 
-    await database.upsert_user(user.id, user.username, user.full_name)
+    await database.upsert_user(user.id, user.username, ((user.first_name or "") + " " + (user.last_name or "")).strip())
 
     await client.send_photo(
         chat_id=user.id,
@@ -476,8 +509,28 @@ async def show_help_callback(client: Client, callback_query: CallbackQuery):
 # ═══════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    # FIX: Storage Leak Prevention - Purana kachra clean karo bot start hone se pehle
+    if os.path.exists(DOWNLOADS_DIR):
+        shutil.rmtree(DOWNLOADS_DIR, ignore_errors=True)
     os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+    
     database.init_db(MONGO_URI)
+
+    # FIX: Creating MongoDB Indexes asynchronously before starting the bot
+
+
+    # FIX: Creating MongoDB Indexes asynchronously before starting the bot
+    async def setup_database_indexes():
+        if database._db is not None:
+            # user_id par filter aur 'at' par descending sort (-1) ke liye Compound Index
+            await database._db["conversions"].create_index([("user_id", 1), ("at", -1)], background=True)
+            print("[DB] Indexes successfully verified/created in background.")
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(setup_database_indexes())
+
+
+
 
     print(r"""
 ╔══════════════════════════════════════════════════════════════╗

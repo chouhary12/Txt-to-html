@@ -29,15 +29,20 @@ def _is_youtube_url(url: str) -> bool:
     """Check if URL contains YouTube domain (but maybe not embeddable ID)."""
     return 'youtube.com/' in url or 'youtu.be/' in url
 
+# FIX: Extracting hardcoded URLs into a dynamic configuration dictionary
+CDN_MAPPINGS = {
+    'https://apps-s3-jw-prod.utkarshapp.com': 'https://d1q5ugnejk3zoi.cloudfront.net/ut-production-jw',
+    # Kal ko naye platforms add karne ho toh bas yahan add karte jana, jaise:
+    # 'https://old-domain.com': 'https://new-cdn.com'
+}
+
 def _transform_url(url: str) -> str:
-    """Rewrite specific domain to CDN."""
-    if url.startswith('https://apps-s3-jw-prod.utkarshapp.com'):
-        return url.replace(
-            'https://apps-s3-jw-prod.utkarshapp.com',
-            'https://d1q5ugnejk3zoi.cloudfront.net/ut-production-jw',
-            1
-        )
+    """Rewrite specific domain to CDN using dynamic mappings."""
+    for old_domain, new_cdn in CDN_MAPPINGS.items():
+        if url.startswith(old_domain):
+            return url.replace(old_domain, new_cdn, 1)
     return url
+
     
     
 import os
@@ -51,14 +56,38 @@ def _sanitize_id(raw: str) -> str:
     
     
 def _is_valid_media_url(url: str) -> bool:
-    """True if URL is a video file, YouTube, or PDF."""
+    """
+    True if URL looks like something worth showing a Play/PDF button for.
+    Accepts:
+      • Known video extensions (.mp4, .m3u8, etc.) — even with a query string
+      • .pdf
+      • YouTube links
+      • ANY other http(s) link with no recognizable extension — many real
+        streaming/CDN/download endpoints (e.g. Koyeb, Render backends) serve
+        video via a plain path like /download/12345 with no file extension.
+        We must NOT silently drop these — better to show a Play button that
+        might fail than to silently delete the user's line.
+    Only rejects: empty strings and obviously non-http garbage.
+    """
+    if not url:
+        return False
     if _is_youtube_url(url) or _get_youtube_id(url):
         return True
-    if '.pdf' in url.lower():
+
+    path = url.split('?')[0].split('#')[0].lower()
+    ext = os.path.splitext(path)[1]
+
+    if ext == '.pdf':
         return True
-    path = url.split('?')[0]
-    ext = os.path.splitext(path)[1].lower()
-    return ext in VIDEO_EXTENSIONS
+    if ext in VIDEO_EXTENSIONS:
+        return True
+    if ext == '':
+        # No extension at all → treat as a streaming/API link, NOT invalid.
+        # Only reject if it doesn't even look like a URL.
+        return url.startswith("http://") or url.startswith("https://") or url.startswith("//")
+    # Has SOME other extension (.jpg, .zip, .exe, etc.) — genuinely not media
+    return False
+
     
     
 # ═══════════════════════════════════════════════════════════════════════════
@@ -70,9 +99,11 @@ def extract_names_and_urls(file_content: str) -> list:
     if file_content.startswith("{") and file_content.endswith("}"):
         try:
             return [("JSON_DATA", json.loads(file_content))]
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as e:
+            # FIX: CPU Freeze prevention. Agar JSON format hai but corrupt hai, toh usko line-by-line parse mat karo, direct error throw karo.
+            raise ValueError(f"Invalid JSON Format: File JSON jaisi lag rahi hai par format galat hai. (Error: {e})")
     pairs = []
+
     for line in file_content.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -125,7 +156,9 @@ def _make_lid(subject: str, topic: str, title: str) -> str:
 def structure_data_in_order(urls: list) -> list:
     structured  = []
     subject_map = {}
-    last_video  = {}
+    last_video            = {}   # (subject, topic, title) → exact-match lecture
+    last_video_in_topic   = {}   # (subject, topic) → most recent lecture in that topic
+    last_video_in_subject = {}   # subject → most recently seen video lecture (any topic)
 
     for idx, (name, url) in enumerate(urls):
         subject, topic, title = parse_line(name)
@@ -152,13 +185,30 @@ def structure_data_in_order(urls: list) -> list:
                 )
             continue
 
-        is_pdf = ".pdf" in url.lower()
-        key    = (subject, topic or "", title or name)
-        lid    = _make_lid(subject, topic or "", f"{title or name}__{idx}")
+        is_pdf   = ".pdf" in url.lower()
+        key      = (subject, topic or "", title or name)
+        topickey = (subject, topic or "")
+        lid      = _make_lid(subject, topic or "", f"{title or name}__{idx}")
 
-        if is_pdf and key in last_video:
-            last_video[key]["pdfs"].append(url)
-            continue
+        if is_pdf:
+            # 1. Exact title match (PDF line named exactly like its video) — best case
+            if key in last_video:
+                last_video[key]["pdfs"].append(url)
+                continue
+            # 2. Same subject+topic → attach to most recent video there.
+            if topickey in last_video_in_topic:
+                last_video_in_topic[topickey]["pdfs"].append(url)
+                continue
+            # 3. Same subject, different/looser topic string (very common —
+            #    PDF lines often have a slightly different label than their
+            #    video, e.g. "Newton #1 notes" vs "Newton #1"). Attach to the
+            #    most recently seen video in the SAME subject, since the PDF
+            #    almost always appears right after its matching video line.
+            if subject in last_video_in_subject:
+                last_video_in_subject[subject]["pdfs"].append(url)
+                continue
+            # 4. No video seen yet anywhere in this subject → falls through,
+            #    becomes its own PDF-only entry (rare: PDF is the very first line).
 
         lecture = {
             "title":  title or name,
@@ -168,6 +218,8 @@ def structure_data_in_order(urls: list) -> list:
         }
         if not is_pdf:
             last_video[key] = lecture
+            last_video_in_topic[topickey] = lecture
+            last_video_in_subject[subject] = lecture
 
         if subject not in subject_map:
             obj = {"name": subject, "topics": {}}
@@ -584,6 +636,22 @@ body{
 .search-clear:hover{color:var(--text);}
 .search-clear.visible{display:block;}
 
+/* ── Filter Chips (Watched / Unwatched / All) ── */
+.filter-chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;}
+.filter-chip{
+  font-size:12.5px;font-weight:600;padding:6px 13px;border-radius:20px;
+  border:1.5px solid var(--border);background:var(--card);color:var(--muted);
+  cursor:pointer;transition:all .2s;
+}
+.filter-chip:hover{border-color:var(--accent2);color:var(--accent2);}
+.filter-chip.active{background:var(--accent2);border-color:var(--accent2);color:#fff;}
+.subject-filter-select{
+  font-size:12.5px;font-weight:600;padding:6px 10px;border-radius:20px;
+  border:1.5px solid var(--border);background:var(--card);color:var(--text);
+  cursor:pointer;outline:none;max-width:160px;
+}
+.subject-filter-select:focus{border-color:var(--accent2);}
+
 /* ── Toolbar ── */
 .toolbar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap;}
 .badge{
@@ -678,6 +746,14 @@ html.dark .topic-header.active{background:#0369a1;}
 .lecture-entry.watched .watch-btn{
   background:var(--green);border-color:var(--green);color:#fff;
 }
+.star-btn{
+  background:none;border:none;color:var(--border);cursor:pointer;
+  font-size:15px;padding:0 2px;flex-shrink:0;margin-top:0;line-height:1;
+  transition:color .2s,transform .15s;
+}
+.star-btn:hover{color:#f5b301;transform:scale(1.15);}
+.star-btn.active{color:#f5b301;}
+.lecture-entry.starred{background:rgba(245,179,1,.05);}
 .copy-btn{
   background:none;border:none;color:var(--muted);cursor:pointer;
   font-size:12px;padding:3px 5px;border-radius:5px;flex-shrink:0;
@@ -724,28 +800,28 @@ html.dark .pdf-item{background:#431407;color:#fb923c;border-color:#7c2d12;}
 html.dark .yt-item{background:#3d0000;color:#ff8080;border-color:#660000;}
 html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#fff;}
 
-/* YouTube embed wrapper */
-.yt-embed-wrapper{
-  display:none;width:100%;aspect-ratio:16/9;
-  border-radius:var(--radius);overflow:hidden;
-  margin-bottom:12px;background:#000;
-  position:sticky;top:calc(var(--header-h) + 3px);z-index:1000;
-  box-shadow:0 8px 32px rgba(0,0,0,.28);
-}
-#yt-frame{width:100%;height:100%;border:none;display:block;}
-/* YouTube direct link – always visible below iframe */
-/* ── YouTube Embed Wrapper ── */
+/* ── YouTube Embed Wrapper (Clean & Merged) ── */
 .yt-embed-wrapper {
-  display: none;                    /* JS se show hoga */
+  display: none;
   width: 100%;
   background: #000;
   border-radius: var(--radius);
   overflow: hidden;
   margin-bottom: 12px;
+  position: sticky;
+  top: calc(var(--header-h) + 3px);
+  z-index: 1000;
   box-shadow: 0 8px 32px rgba(0,0,0,.28);
-  flex-direction: column;           /* iframe + button column mein */
+  flex-direction: column;
   align-items: center;
 }
+#yt-frame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: none;
+  display: block;
+}
+
 .yt-embed-wrapper.show {
   display: flex;
 }
@@ -888,15 +964,39 @@ html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#ff
 
 .plyr__menu__container{
     z-index: 99999 !important;
-    max-height: 220px !important;
+    max-height: min(220px, 45vh) !important;
     overflow-y: auto !important;
     overflow-x: hidden !important;
+    border-radius: 10px !important;
 }
 
-/* Mobile speed menu */
 .plyr__menu__container [role="menu"]{
-    max-height: 180px !important;
+    max-height: min(180px, 40vh) !important;
     overflow-y: auto !important;
+}
+
+/* Quality/speed menu items — bigger tap targets on mobile, clear active state */
+.plyr__menu__container [role="menuitemradio"]{
+    padding: 10px 14px !important;
+    font-size: 14px !important;
+    min-height: 40px !important;
+}
+.plyr__menu__container [role="menuitemradio"][aria-checked="true"]{
+    font-weight: 700 !important;
+    color: var(--accent2) !important;
+}
+@media(max-width:480px){
+  .plyr__menu__container{ max-height:min(190px,38vh) !important; }
+  .plyr__menu__container [role="menuitemradio"]{ padding:12px 14px !important; font-size:13.5px !important; }
+}
+/* HD badge next to 720p/1080p/1440p/2160p quality options */
+.plyr__menu__container [data-plyr="quality"][value="720"] span::after,
+.plyr__menu__container [data-plyr="quality"][value="1080"] span::after,
+.plyr__menu__container [data-plyr="quality"][value="1440"] span::after,
+.plyr__menu__container [data-plyr="quality"][value="2160"] span::after{
+  content:'HD'; font-size:9px; font-weight:800; color:#fff;
+  background:var(--accent2); border-radius:4px; padding:1px 5px; margin-left:6px;
+  vertical-align:middle;
 }
 
 /* Smooth scrolling */
@@ -906,6 +1006,88 @@ html.dark .yt-item:hover,html.dark .yt-item.playing{background:#cc0000;color:#ff
 
 .plyr__menu__container::-webkit-scrollbar-thumb{
     border-radius: 10px;
+}
+
+/* ═══════════════════════════════════
+   MODAL SYSTEM (Settings + PDF)
+═══════════════════════════════════ */
+.modal-overlay{
+  position:fixed;inset:0;background:rgba(0,0,0,.6);
+  display:flex;align-items:center;justify-content:center;
+  z-index:9500;opacity:0;visibility:hidden;padding:16px;
+  transition:opacity .25s,visibility .25s;
+  backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+}
+.modal-overlay.open{opacity:1;visibility:visible;}
+.modal-box{
+  background:var(--card);border-radius:var(--radius);
+  box-shadow:0 20px 60px rgba(0,0,0,.35);
+  width:100%;max-width:420px;max-height:88vh;overflow-y:auto;
+  transform:scale(.94) translateY(10px);transition:transform .25s;
+}
+.modal-overlay.open .modal-box{transform:scale(1) translateY(0);}
+.modal-header{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:16px 18px;border-bottom:1px solid var(--border);
+}
+.modal-title{font-size:16px;font-weight:700;color:var(--text);}
+.modal-close{
+  background:none;border:none;color:var(--muted);font-size:18px;
+  cursor:pointer;padding:4px 8px;border-radius:6px;transition:all .2s;
+}
+.modal-close:hover{background:var(--bg);color:var(--text);}
+.modal-body{padding:18px;}
+
+/* Settings form */
+.setting-row{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:12px 0;border-bottom:1px solid var(--border);gap:12px;
+}
+.setting-row:last-of-type{border-bottom:none;}
+.setting-label{font-size:14px;font-weight:600;color:var(--text);}
+.setting-hint{font-size:11.5px;color:var(--muted);margin-top:2px;}
+.setting-control select,.setting-control input[type="number"]{
+  padding:7px 10px;border:1.5px solid var(--border);border-radius:8px;
+  background:var(--bg);color:var(--text);font-size:13px;width:90px;
+}
+.switch{position:relative;display:inline-block;width:42px;height:24px;flex-shrink:0;}
+.switch input{opacity:0;width:0;height:0;}
+.switch-track{
+  position:absolute;inset:0;background:var(--border);border-radius:24px;
+  cursor:pointer;transition:background .2s;
+}
+.switch-track::before{
+  content:'';position:absolute;width:18px;height:18px;left:3px;top:3px;
+  background:#fff;border-radius:50%;transition:transform .2s;
+  box-shadow:0 1px 3px rgba(0,0,0,.3);
+}
+.switch input:checked + .switch-track{background:var(--accent2);}
+.switch input:checked + .switch-track::before{transform:translateX(18px);}
+.modal-save-btn{
+  width:100%;padding:11px;background:var(--accent2);color:#fff;
+  border:none;border-radius:var(--radius-sm);font-size:14px;font-weight:700;
+  cursor:pointer;margin-top:14px;transition:background .2s;
+}
+.modal-save-btn:hover{background:var(--accent);}
+
+/* PDF modal specific */
+.pdf-modal-box{max-width:900px;height:88vh;display:flex;flex-direction:column;}
+.pdf-modal-body{flex:1;padding:0;display:flex;flex-direction:column;overflow:hidden;}
+#pdf-frame{width:100%;flex:1;border:none;background:#525659;}
+.pdf-modal-actions{
+  display:flex;gap:8px;padding:10px 14px;border-top:1px solid var(--border);
+  flex-wrap:wrap;
+}
+.pdf-action-btn{
+  display:inline-flex;align-items:center;gap:6px;padding:8px 14px;
+  border-radius:20px;font-size:12.5px;font-weight:600;text-decoration:none;
+  background:var(--bg);color:var(--text);border:1.5px solid var(--border);
+  cursor:pointer;transition:all .2s;
+}
+.pdf-action-btn:hover{border-color:var(--accent2);color:var(--accent2);}
+@media(max-width:600px){
+  .pdf-modal-box{height:92vh;}
+  .modal-box{max-width:100%;}
 }
 
 """
@@ -1109,6 +1291,16 @@ var autoNextTarget  = null;
 var lastErrorUrl    = null;
 var renderedSubjects = {};  
 var globalLectureIdx = 0;   
+var starredSet       = new Set();
+var currentWatchFilter = 'all';   // 'all' | 'watched' | 'unwatched'
+var currentSubjectFilter = '';    // '' = all subjects, else subIdx as string
+var currentSearchTerm  = '';
+var SETTINGS = {
+  autoNextEnabled: true,
+  autoNextSeconds: 5,
+  defaultSpeed:    1,
+  autoPip:         true
+};
 
 /* ═══════════════════════════════════
    TOAST
@@ -1162,7 +1354,6 @@ function _persistWatched() {
 }
 
 function updateWatchedUI() {
-  var total = 0, watched = 0;
   document.querySelectorAll('.lecture-entry[data-lid]').forEach(function (entry) {
     var lid = entry.dataset.lid;
     var w   = watchedSet.has(lid);
@@ -1172,8 +1363,6 @@ function updateWatchedUI() {
       wb.innerHTML = w ? '&#10003;' : '&#9675;';
       wb.setAttribute('aria-pressed', w ? 'true' : 'false');
     }
-    total++;
-    if (w) watched++;
   });
 
   document.querySelectorAll('.accordion-item').forEach(function (sub) {
@@ -1190,6 +1379,11 @@ function updateWatchedUI() {
     });
   });
 
+  // FIX: use LECTURES.length (full course, always accurate) instead of
+  // counting only currently-rendered DOM nodes — big courses with lazy
+  // rendering used to show a wrong/partial percentage here.
+  var total   = LECTURES.length;
+  var watched = watchedSet.size;
   var pb   = document.getElementById('progress-badge');
   var fill = document.getElementById('progress-fill');
   if (total > 0) {
@@ -1197,6 +1391,33 @@ function updateWatchedUI() {
     if (pb)   pb.textContent = 'Progress: ' + watched + '/' + total + ' (' + pct + '%)';
     if (fill) fill.style.width = pct + '%';
   }
+}
+
+/* ═══════════════════════════════════
+   FAVORITE / STAR LECTURES
+═══════════════════════════════════ */
+function loadStars() {
+  try { starredSet = new Set(JSON.parse(localStorage.getItem(FILE_KEY + '_star') || '[]')); } catch (e) {}
+  updateStarUI();
+}
+function toggleStar(lid) {
+  var was = starredSet.has(lid);
+  if (was) { starredSet.delete(lid); showToast('Favorite se hataya', 'warn'); }
+  else     { starredSet.add(lid);    showToast('\u2b50 Favorite mein add hua', 'success'); }
+  try { localStorage.setItem(FILE_KEY + '_star', JSON.stringify([...starredSet])); } catch (e) {}
+  updateStarUI();
+}
+function updateStarUI() {
+  document.querySelectorAll('.lecture-entry[data-lid]').forEach(function (entry) {
+    var lid = entry.dataset.lid;
+    var s   = starredSet.has(lid);
+    entry.classList.toggle('starred', s);
+    var sb = entry.querySelector('.star-btn');
+    if (sb) {
+      sb.classList.toggle('active', s);
+      sb.setAttribute('aria-pressed', s ? 'true' : 'false');
+    }
+  });
 }
 
 /* ═══════════════════════════════════
@@ -1262,22 +1483,37 @@ function initDarkMode() {
    EXPAND / COLLAPSE ALL
 ═══════════════════════════════════ */
 function expandAll() {
-  document.querySelectorAll('.accordion-header').forEach(function (btn) {
-    var subIdx = parseInt(btn.getAttribute('data-subidx'));
-    if (!isNaN(subIdx) && !renderedSubjects[subIdx]) {
-      renderLecturesForSubject(subIdx);
+  var headers = Array.prototype.slice.call(document.querySelectorAll('.accordion-header'));
+  var BATCH = 4;   // subjects rendered per animation frame — keeps UI responsive
+  var i = 0;
+
+  if (headers.length > 8) showToast('Sab expand ho rahe hain\u2026', 'info', 1400);
+
+  function step() {
+    var end = Math.min(i + BATCH, headers.length);
+    for (; i < end; i++) {
+      var btn = headers[i];
+      var subIdx = parseInt(btn.getAttribute('data-subidx'), 10);
+      if (!isNaN(subIdx) && !renderedSubjects[subIdx]) {
+        renderLecturesForSubject(subIdx);
+      }
+      btn.classList.add('active');
+      btn.setAttribute('aria-expanded', 'true');
+      var content = btn.nextElementSibling;
+      content.classList.add('open');
+      content.style.maxHeight = 'none';
     }
-    btn.classList.add('active');
-    btn.setAttribute('aria-expanded', 'true');
-    var content = btn.nextElementSibling;
-    content.classList.add('open');
-    content.style.maxHeight = 'none';
-  });
-  document.querySelectorAll('.topic-header').forEach(function (b) {
-    b.classList.add('active');
-    b.setAttribute('aria-expanded', 'true');
-    b.nextElementSibling.style.maxHeight = 'none';
-  });
+    if (i < headers.length) {
+      requestAnimationFrame(step);
+    } else {
+      document.querySelectorAll('.topic-header').forEach(function (b) {
+        b.classList.add('active');
+        b.setAttribute('aria-expanded', 'true');
+        b.nextElementSibling.style.maxHeight = 'none';
+      });
+    }
+  }
+  requestAnimationFrame(step);
 }
 
 function collapseAll() {
@@ -1300,6 +1536,7 @@ function collapseAll() {
 ═══════════════════════════════════ */
 var _searchTimer = null;
 function filterContent(rawTerm) {
+  currentSearchTerm = rawTerm;
   clearTimeout(_searchTimer);
   _searchTimer = setTimeout(function () { _doFilter(rawTerm); }, 200);
   var clearBtn = document.getElementById('search-clear');
@@ -1310,40 +1547,102 @@ function clearSearch() {
   if (input) { input.value = ''; input.focus(); }
   filterContent('');
 }
+function setWatchFilter(val) {
+  currentWatchFilter = val;
+  document.querySelectorAll('.filter-chip').forEach(function (c) {
+    c.classList.toggle('active', c.dataset.filter === val);
+  });
+  _doFilter(currentSearchTerm);
+}
+function setSubjectFilter(val) {
+  currentSubjectFilter = val;
+  _doFilter(currentSearchTerm);
+}
 
 function _doFilter(rawTerm) {
+  var term = rawTerm.trim().toLowerCase();
 
-  // Ensure all subjects are rendered so we can search everywhere
-  document.querySelectorAll('.accordion-header').forEach(function(btn) {
-    var idx = parseInt(btn.getAttribute('data-subidx'));
-    if (!isNaN(idx) && !renderedSubjects[idx]) {
-      renderLecturesForSubject(idx);
-    }
+  /* FIX (perf): don't force-render every subject anymore — that's what
+     caused big courses (600+ lectures) to hang/freeze on search/filter.
+     Matches (text + watched/unwatched + subject) are computed against the
+     raw LECTURES data array (already in memory) — no DOM cost at all.
+     Only subjects that actually have a visible match get rendered/shown;
+     everything else stays hidden & unrendered. */
+
+  var activeFilter = currentWatchFilter || 'all';        // 'all' | 'watched' | 'unwatched'
+  var subFilter     = currentSubjectFilter !== '' ? parseInt(currentSubjectFilter, 10) : null;
+  var noFilterAtAll = !term && activeFilter === 'all' && subFilter === null;
+
+  // FAST PATH — everything cleared: just show subjects as-is, render nothing new.
+  if (noFilterAtAll) {
+    document.querySelectorAll('.accordion-item').forEach(function (subEl) {
+      subEl.style.display = '';
+      var titleEl;
+      subEl.querySelectorAll('.lecture-entry').forEach(function (lec) {
+        lec.style.display = '';
+        titleEl = lec.querySelector('.lecture-title');
+        if (titleEl) titleEl.innerHTML = titleEl.dataset.title || titleEl.textContent;
+      });
+      subEl.querySelectorAll('.topic-accordion').forEach(function (t) { t.style.display = ''; });
+    });
+    var cb0 = document.getElementById('search-result-count');
+    if (cb0) cb0.style.display = 'none';
+    return;
+  }
+
+  var matchedSubs = {};   // subIdx -> true (subject has ≥1 visible match)
+  var matchedLids = {};   // lid -> true (this specific lecture is visible)
+
+  for (var i = 0; i < LECTURES.length; i++) {
+    var lec = LECTURES[i];
+    if (subFilter !== null && lec.subIdx !== subFilter) continue;
+    if (term && lec.title.toLowerCase().indexOf(term) === -1) continue;
+    var watched = watchedSet.has(lec.lid);
+    if (activeFilter === 'watched'   && !watched) continue;
+    if (activeFilter === 'unwatched' &&  watched) continue;
+    matchedLids[lec.lid] = true;
+    matchedSubs[lec.subIdx] = true;
+  }
+
+  // Render only the subjects that actually contain a match
+  Object.keys(matchedSubs).forEach(function (subIdxStr) {
+    var subIdx = parseInt(subIdxStr, 10);
+    if (!renderedSubjects[subIdx]) renderLecturesForSubject(subIdx);
   });
-  
-  var term    = rawTerm.trim().toLowerCase();
+
   var esc_re  = term ? new RegExp('(' + term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi') : null;
   var visible = 0;
 
   document.querySelectorAll('.accordion-item').forEach(function (subEl) {
+    var subIdx = parseInt(subEl.querySelector('.accordion-header').getAttribute('data-subidx'), 10);
+
+    if (!matchedSubs[subIdx]) {
+      subEl.style.display = 'none';
+      return;
+    }
+    if (!renderedSubjects[subIdx]) {
+      // Shouldn't normally happen (we just rendered above) — safety net.
+      subEl.style.display = 'none';
+      return;
+    }
+
     var subHasVisible = false;
 
     subEl.querySelectorAll('.topic-accordion').forEach(function (topicEl) {
       var topicHasVisible = false;
       topicEl.querySelectorAll('.lecture-entry').forEach(function (lec) {
+        var lid     = lec.dataset.lid;
         var titleEl = lec.querySelector('.lecture-title');
         var orig    = titleEl.dataset.title || titleEl.textContent;
-        var match   = !term || orig.toLowerCase().indexOf(term) !== -1;
+        var match   = !!matchedLids[lid];
         lec.style.display = match ? '' : 'none';
         if (match) {
-          topicHasVisible = true;
-          subHasVisible   = true;
-          visible++;
+          topicHasVisible = true; subHasVisible = true; visible++;
           titleEl.innerHTML = term ? orig.replace(esc_re, '<mark>$1</mark>') : orig;
         }
       });
       topicEl.style.display = topicHasVisible ? '' : 'none';
-      if (term && topicHasVisible) {
+      if (topicHasVisible) {
         var th = topicEl.querySelector('.topic-header');
         th.classList.add('active');
         th.setAttribute('aria-expanded', 'true');
@@ -1352,19 +1651,19 @@ function _doFilter(rawTerm) {
     });
 
     subEl.querySelectorAll('.accordion-content > .lecture-entry').forEach(function (lec) {
+      var lid     = lec.dataset.lid;
       var titleEl = lec.querySelector('.lecture-title');
       var orig    = titleEl.dataset.title || titleEl.textContent;
-      var match   = !term || orig.toLowerCase().indexOf(term) !== -1;
+      var match   = !!matchedLids[lid];
       lec.style.display = match ? '' : 'none';
       if (match) {
-        subHasVisible = true;
-        visible++;
+        subHasVisible = true; visible++;
         titleEl.innerHTML = term ? orig.replace(esc_re, '<mark>$1</mark>') : orig;
       }
     });
 
     subEl.style.display = subHasVisible ? '' : 'none';
-    if (term && subHasVisible) {
+    if (subHasVisible) {
       var ah = subEl.querySelector('.accordion-header');
       ah.classList.add('active');
       ah.setAttribute('aria-expanded', 'true');
@@ -1376,8 +1675,9 @@ function _doFilter(rawTerm) {
 
   var cb = document.getElementById('search-result-count');
   if (cb) {
-    cb.textContent = term ? visible + ' results' : '';
-    cb.style.display = term ? '' : 'none';
+    var showBadge = term || activeFilter !== 'all';
+    cb.textContent   = showBadge ? visible + ' results' : '';
+    cb.style.display = showBadge ? '' : 'none';
   }
 }
 
@@ -1422,6 +1722,7 @@ function playNext() {
    AUTO-NEXT COUNTDOWN
 ═══════════════════════════════════ */
 function _startAutoNext(nextEntry) {
+  if (!SETTINGS.autoNextEnabled) return;   // user turned auto-next off in Settings
   var btn = nextEntry.querySelector('.video-item');
   if (!btn) return;
   autoNextTarget = btn;
@@ -1432,7 +1733,7 @@ function _startAutoNext(nextEntry) {
   if (labelEl) labelEl.textContent = 'Next: "' + nextTitle + '"';
   banner.classList.add('show');
 
-  var count = 5;
+  var count = SETTINGS.autoNextSeconds || 5;
   if (countEl) countEl.textContent = count;
   autoNextTimer = setInterval(function () {
     count--;
@@ -1712,7 +2013,7 @@ function loadNewVideo(url, startTime) {
       'settings', 'pip', 'fullscreen'
     ],
     settings:  ['speed', 'quality'],
-    speed:     { selected: 1, options: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5] },
+    speed:     { selected: SETTINGS.defaultSpeed || 1, options: [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5] },
     fullscreen:{ enabled: true, fallback: true, iosNative: true },
     clickToPlay: true,
     keyboard:  { focused: true, global: false },
@@ -1853,6 +2154,7 @@ function renderLecturesForSubject(subIdx) {
 
   renderedSubjects[subIdx] = true;
   updateWatchedUI(); // apply watched state to newly rendered lectures
+  updateStarUI();    // apply favorite state to newly rendered lectures
 }
 
 
@@ -1887,15 +2189,20 @@ function _renderLectureHTML(lec, gidx) {
 
   var pdfLinks = '';
   for (var j = 0; j < pdfs.length; j++) {
-    var eu = pdfs[j];
-    pdfLinks += '<a href="' + eu + '" target="_blank" rel="noopener noreferrer" class="list-item pdf-item" aria-label="Open PDF for ' + eta + '"><i class="fa-solid fa-file-pdf" aria-hidden="true"></i>&nbsp;PDF</a>';
+    var eu = htmlAttrEscape(pdfs[j]);
+    pdfLinks += '<a href="' + eu + '" target="_blank" rel="noopener noreferrer" class="list-item pdf-item" ' +
+      'data-url="' + eu + '" data-title="' + eta + '" ' +
+      'aria-label="Open PDF for ' + eta + '" ' +
+      'onclick="openPdfModal(this.dataset.url,this.dataset.title);event.preventDefault();">' +
+      '<i class="fa-solid fa-file-pdf" aria-hidden="true"></i>&nbsp;PDF</a>';
   }
 
   var watchBtn = '<button class="watch-btn" data-lid="' + lid + '" onclick="toggleWatched(\'' + lid + '\')" aria-label="Mark as watched" aria-pressed="false" title="Mark watched">&#9675;</button>';
+  var starBtn  = '<button class="star-btn" data-lid="' + lid + '" onclick="toggleStar(\'' + lid + '\')" aria-label="Add to favorites" aria-pressed="false" title="Favorite"><i class="fa-solid fa-star" aria-hidden="true"></i></button>';
   var copyBtn = videos.length ? '<button class="copy-btn" data-lid="' + lid + '" onclick="copyLectureLink(\'' + lid + '\')" aria-label="Copy link" title="Copy link"><i class="fa-solid fa-link" aria-hidden="true"></i></button>' : '';
 
   return '<div class="lecture-entry" data-lid="' + lid + '" data-gidx="' + gidx + '">' +
-    '<div class="lecture-meta">' + watchBtn + '<p class="lecture-title" data-title="' + eta + '">' + et + '</p>' + copyBtn + '</div>' +
+    '<div class="lecture-meta">' + watchBtn + starBtn + '<p class="lecture-title" data-title="' + eta + '">' + et + '</p>' + copyBtn + '</div>' +
     '<div class="lecture-links">' + videoLinks + pdfLinks + '</div></div>';
 }
 
@@ -2073,15 +2380,126 @@ function _initAccordions() {
 }
 
 /* ═══════════════════════════════════
+   SETTINGS
+═══════════════════════════════════ */
+function loadSettings() {
+  try {
+    var raw = localStorage.getItem('bbk_settings');
+    if (raw) {
+      var saved = JSON.parse(raw);
+      for (var k in saved) { if (k in SETTINGS) SETTINGS[k] = saved[k]; }
+    }
+  } catch (e) {}
+  // Reflect into UI controls if the modal markup exists
+  var el;
+  if ((el = document.getElementById('set-autonext')))   el.checked = SETTINGS.autoNextEnabled;
+  if ((el = document.getElementById('set-autoseconds'))) el.value  = SETTINGS.autoNextSeconds;
+  if ((el = document.getElementById('set-speed')))       el.value  = String(SETTINGS.defaultSpeed);
+  if ((el = document.getElementById('set-dark')))        el.checked = document.documentElement.classList.contains('dark');
+  if ((el = document.getElementById('set-pip')))         el.checked = SETTINGS.autoPip;
+}
+function saveSettingsFromForm() {
+  var el;
+  if ((el = document.getElementById('set-autonext')))   SETTINGS.autoNextEnabled = el.checked;
+  if ((el = document.getElementById('set-autoseconds'))) SETTINGS.autoNextSeconds = Math.max(1, parseInt(el.value, 10) || 5);
+  if ((el = document.getElementById('set-speed')))       SETTINGS.defaultSpeed    = parseFloat(el.value) || 1;
+  if ((el = document.getElementById('set-pip')))         SETTINGS.autoPip         = el.checked;
+  try { localStorage.setItem('bbk_settings', JSON.stringify(SETTINGS)); } catch (e) {}
+
+  // Dark mode default — single source of truth is the existing 'bbk_dark' key
+  if ((el = document.getElementById('set-dark'))) {
+    var wantDark = el.checked;
+    var isDark   = document.documentElement.classList.contains('dark');
+    if (wantDark !== isDark) toggleDark();
+  }
+
+  showToast('Settings save ho gayi \u2713', 'success');
+  closeSettings();
+}
+function openSettings() {
+  var m = document.getElementById('settings-modal');
+  if (m) { m.classList.add('open'); document.body.style.overflow = 'hidden'; }
+}
+function closeSettings() {
+  var m = document.getElementById('settings-modal');
+  if (m) { m.classList.remove('open'); document.body.style.overflow = ''; }
+}
+
+/* ═══════════════════════════════════
+   AUTO PICTURE-IN-PICTURE
+═══════════════════════════════════ */
+function _initAutoPip() {
+  if (!('pictureInPictureEnabled' in document)) return;
+  document.addEventListener('visibilitychange', function () {
+    var videoEl = document.getElementById('player');
+    if (!videoEl) return;
+    if (document.hidden) {
+      if (SETTINGS.autoPip && player && isPlayerReady && !videoEl.paused &&
+          document.pictureInPictureElement !== videoEl) {
+        videoEl.requestPictureInPicture().catch(function () {});
+      }
+    } else {
+      if (document.pictureInPictureElement === videoEl) {
+        document.exitPictureInPicture().catch(function () {});
+      }
+    }
+  });
+}
+
+/* ═══════════════════════════════════
+   PDF MODAL
+═══════════════════════════════════ */
+var _pdfCurrentUrl = null;
+function openPdfModal(url, title) {
+  _pdfCurrentUrl = url;
+  var modal  = document.getElementById('pdf-modal');
+  var frame  = document.getElementById('pdf-frame');
+  var titleEl = document.getElementById('pdf-modal-title');
+  var openTab = document.getElementById('pdf-open-tab');
+  var dlBtn   = document.getElementById('pdf-download');
+  if (titleEl) titleEl.textContent = title || 'PDF';
+  if (frame)   frame.src = url;
+  if (openTab) openTab.href = url;
+  if (dlBtn)   dlBtn.href = url;
+  if (modal)   { modal.classList.add('open'); document.body.style.overflow = 'hidden'; }
+}
+function closePdfModal() {
+  var modal = document.getElementById('pdf-modal');
+  var frame = document.getElementById('pdf-frame');
+  if (frame) frame.src = 'about:blank';
+  if (modal) { modal.classList.remove('open'); document.body.style.overflow = ''; }
+  _pdfCurrentUrl = null;
+}
+function pdfModalFullscreen() {
+  var frame = document.getElementById('pdf-frame');
+  if (frame && frame.requestFullscreen) frame.requestFullscreen().catch(function () {});
+}
+
+/* ═══════════════════════════════════
    INIT
 ═══════════════════════════════════ */
 document.addEventListener('DOMContentLoaded', function () {
+  loadSettings();
   initDarkMode();
   loadWatched();
+  loadStars();
   checkResume();
   _initAccordions();
   _initKeyboard();
   _setupDoubleTapSeek();
+  _initAutoPip();
+
+  document.querySelectorAll('.modal-overlay').forEach(function (ov) {
+    ov.addEventListener('click', function (e) {
+      if (e.target === ov) {
+        if (ov.id === 'settings-modal') closeSettings();
+        if (ov.id === 'pdf-modal') closePdfModal();
+      }
+    });
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeSettings(); closePdfModal(); }
+  });
 });
 """
 
@@ -2148,6 +2566,11 @@ def generate_html(file_name: str, structured_list: list) -> str:
     js           = _build_js(file_name)
     ename        = html.escape(file_name)
 
+    subject_options = '<option value="">All Subjects</option>' + "".join(
+        f'<option value="{i}">{html.escape(sub["name"])}</option>'
+        for i, sub in enumerate(structured_list)
+    )
+
     lines = [
         '<!DOCTYPE html>',
         '<html lang="en">',
@@ -2175,6 +2598,7 @@ def generate_html(file_name: str, structured_list: list) -> str:
         '    <button onclick="expandAll()" class="ctrl-btn" title="Expand all (E)" aria-label="Expand all">\u229e</button>',
         '    <button onclick="collapseAll()" class="ctrl-btn" title="Collapse all (C)" aria-label="Collapse all">\u229f</button>',
         '    <button onclick="toggleDark()" class="ctrl-btn" id="darkBtn" title="Toggle dark mode (D)" aria-label="Toggle dark mode">\U0001f319</button>',
+        '    <button onclick="openSettings()" class="ctrl-btn" title="Settings" aria-label="Open settings"><i class="fa-solid fa-gear" aria-hidden="true"></i></button>',
         '    <button class="kk-drawer-toggle" id="kk-drawer-toggle"',
         '      aria-label="Open menu" aria-expanded="false" aria-haspopup="true">',
         '      <span></span><span></span><span></span>',
@@ -2248,6 +2672,13 @@ def generate_html(file_name: str, structured_list: list) -> str:
         '      onclick="clearSearch()" aria-label="Clear search">\u2715</button>',
         '  </div>',
 
+        '  <div class="filter-chips" role="group" aria-label="Filter lectures">',
+        '    <button class="filter-chip active" data-filter="all" onclick="setWatchFilter(\'all\')">All</button>',
+        '    <button class="filter-chip" data-filter="unwatched" onclick="setWatchFilter(\'unwatched\')">\u25cb Unwatched</button>',
+        '    <button class="filter-chip" data-filter="watched" onclick="setWatchFilter(\'watched\')">\u2713 Watched</button>',
+        f'    <select id="subjectFilter" class="subject-filter-select" onchange="setSubjectFilter(this.value)" aria-label="Filter by subject">{subject_options}</select>',
+        '  </div>',
+
         '  <div class="toolbar" role="toolbar" aria-label="Lecture info">',
         f'    <span class="badge" aria-label="{total} total lectures">{total} lectures</span>',
         '    <span class="badge badge-result" id="search-result-count" style="display:none" aria-live="polite"></span>',
@@ -2256,6 +2687,81 @@ def generate_html(file_name: str, structured_list: list) -> str:
 
         f'  <div id="content-container" role="list" aria-label="Course content">{content_html}</div>',
         '</main>',
+
+        # ── Settings Modal ──
+        '<div class="modal-overlay" id="settings-modal" role="dialog" aria-modal="true" aria-label="Settings">',
+        '  <div class="modal-box">',
+        '    <div class="modal-header">',
+        '      <span class="modal-title"><i class="fa-solid fa-gear" aria-hidden="true"></i>&nbsp; Settings</span>',
+        '      <button class="modal-close" onclick="closeSettings()" aria-label="Close">\u2715</button>',
+        '    </div>',
+        '    <div class="modal-body">',
+
+        '      <div class="setting-row">',
+        '        <div><div class="setting-label">Auto-next lecture</div>',
+        '          <div class="setting-hint">Video khatam hote hi agla lecture chale</div></div>',
+        '        <label class="switch"><input type="checkbox" id="set-autonext" checked>',
+        '          <span class="switch-track"></span></label>',
+        '      </div>',
+
+        '      <div class="setting-row">',
+        '        <div><div class="setting-label">Auto-next delay</div>',
+        '          <div class="setting-hint">Countdown seconds agle video se pehle</div></div>',
+        '        <div class="setting-control"><input type="number" id="set-autoseconds" min="1" max="30" value="5"></div>',
+        '      </div>',
+
+        '      <div class="setting-row">',
+        '        <div><div class="setting-label">Default playback speed</div>',
+        '          <div class="setting-hint">Har naye video ki default speed</div></div>',
+        '        <div class="setting-control"><select id="set-speed">',
+        '          <option value="0.5">0.5x</option><option value="0.75">0.75x</option>',
+        '          <option value="1" selected>1x (Normal)</option><option value="1.25">1.25x</option>',
+        '          <option value="1.5">1.5x</option><option value="1.75">1.75x</option>',
+        '          <option value="2">2x</option>',
+        '        </select></div>',
+        '      </div>',
+
+        '      <div class="setting-row">',
+        '        <div><div class="setting-label">Dark mode by default</div>',
+        '          <div class="setting-hint">App khulte hi dark theme lagi rahe</div></div>',
+        '        <label class="switch"><input type="checkbox" id="set-dark">',
+        '          <span class="switch-track"></span></label>',
+        '      </div>',
+
+        '      <div class="setting-row">',
+        '        <div><div class="setting-label">Auto Picture-in-Picture</div>',
+        '          <div class="setting-hint">Tab switch karte hi video floating ho jaaye</div></div>',
+        '        <label class="switch"><input type="checkbox" id="set-pip" checked>',
+        '          <span class="switch-track"></span></label>',
+        '      </div>',
+
+        '      <button class="modal-save-btn" onclick="saveSettingsFromForm()">Save Settings</button>',
+        '    </div>',
+        '  </div>',
+        '</div>',
+
+        # ── PDF Modal ──
+        '<div class="modal-overlay" id="pdf-modal" role="dialog" aria-modal="true" aria-label="PDF viewer">',
+        '  <div class="modal-box pdf-modal-box">',
+        '    <div class="modal-header">',
+        '      <span class="modal-title" id="pdf-modal-title"><i class="fa-solid fa-file-pdf" aria-hidden="true"></i>&nbsp; PDF</span>',
+        '      <button class="modal-close" onclick="closePdfModal()" aria-label="Close">\u2715</button>',
+        '    </div>',
+        '    <div class="pdf-modal-body">',
+        '      <iframe id="pdf-frame" src="about:blank" title="PDF document"></iframe>',
+        '    </div>',
+        '    <div class="pdf-modal-actions">',
+        '      <a id="pdf-open-tab" class="pdf-action-btn" href="#" target="_blank" rel="noopener">',
+        '        <i class="fa-solid fa-up-right-from-square" aria-hidden="true"></i> Naye Tab Mein Kholo</a>',
+        '      <a id="pdf-download" class="pdf-action-btn" href="#" download target="_blank" rel="noopener">',
+        '        <i class="fa-solid fa-download" aria-hidden="true"></i> Download</a>',
+        '      <button class="pdf-action-btn" onclick="pdfModalFullscreen()">',
+        '        <i class="fa-solid fa-expand" aria-hidden="true"></i> Fullscreen</button>',
+        '      <button class="pdf-action-btn" onclick="closePdfModal()">',
+        '        <i class="fa-solid fa-xmark" aria-hidden="true"></i> Close</button>',
+        '    </div>',
+        '  </div>',
+        '</div>',
 
         # ── Footer — Telegram link, text "Babu Bhai Kundan" ──
         '<footer class="footer-wrap">',

@@ -8,7 +8,7 @@ from os import environ
 API_ID    = int(environ.get("API_ID", "0"))
 API_HASH  = environ.get("API_HASH", "")
 BOT_TOKEN = environ.get("BOT_TOKEN", "")
-CREDIT    = environ.get("CREDIT", "𝕂𝕦𝕟𝕕𝕒𝕟 𝕐𝕒𝕕𝕒𝕧😎")
+CREDIT    = environ.get("CREDIT", "𝕂𝕦𝕟𝕕𝕒𝕟 𝕐𝕒𝕕𝕒𝕧⚠️")
 MONGO_URI = environ.get("MONGO_URI", "")
 
 # Public channel username WITHOUT @ (e.g. "BabuBhaiKundan")
@@ -21,7 +21,6 @@ if _log_raw.lstrip("-").isdigit():
     LOG_CHANNEL = int(_log_raw)
 else:
     LOG_CHANNEL = _log_raw or None   # None means logging disabled
- 
 
 
 # Space-separated admin Telegram user IDs  e.g. "123456789 987654321"
@@ -32,18 +31,11 @@ ADMINS = [int(x) for x in environ.get("ADMINS", "5096393058").split() if x.strip
 # Proxy Configuration
 # ========================================
 
-
 def _is_true(value):
     if value is None:
         return False
-
     return str(value).strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-        "enable",
-        "enabled"
+        "1", "true", "yes", "on", "enable", "enabled"
     )
 
 
@@ -52,10 +44,8 @@ USE_PROXY = _is_true(os.getenv("USE_PROXY"))
 PYROGRAM_PROXY = None
 
 if USE_PROXY:
-
     scheme = os.getenv("PROXY_SCHEME", "socks5").strip() or "socks5"
-
-    host = os.getenv("PROXY_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    host   = os.getenv("PROXY_HOST", "127.0.0.1").strip() or "127.0.0.1"
 
     try:
         port = int(os.getenv("PROXY_PORT", "9050"))
@@ -63,9 +53,17 @@ if USE_PROXY:
         port = 9050
 
     PYROGRAM_PROXY = {
-        "scheme": scheme,
+        "scheme":   scheme,
         "hostname": host,
-        "port": port
+        "port":     port,
     }
+
+    # Optional — only add if your proxy needs authentication
+    _proxy_user = os.getenv("PROXY_USERNAME", "").strip()
+    _proxy_pass = os.getenv("PROXY_PASSWORD", "").strip()
+    if _proxy_user:
+        PYROGRAM_PROXY["username"] = _proxy_user
+    if _proxy_pass:
+        PYROGRAM_PROXY["password"] = _proxy_pass
 
 # ========================================

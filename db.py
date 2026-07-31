@@ -32,7 +32,8 @@ async def upsert_user(user_id: int, username: str = None, full_name: str = None)
     col = _col("users")
     if col is None:
         return
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc)
+
     await col.update_one(
         {"_id": user_id},
         {
@@ -67,7 +68,8 @@ async def log_conversion(user_id: int, file_name: str, lecture_count: int = 0) -
         "user_id":       user_id,
         "file_name":     file_name,
         "lecture_count": lecture_count,
-        "at":            datetime.datetime.utcnow(),
+        "at":            datetime.datetime.now(datetime.timezone.utc),
+
     })
 
 
@@ -80,7 +82,8 @@ async def count_conversions_today() -> int:
     col = _col("conversions")
     if col is None:
         return 0
-    today = datetime.datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    today = datetime.datetime.now(datetime.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
     return await col.count_documents({"at": {"$gte": today}})
 
 
